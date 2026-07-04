@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PCA Reference UI</title>
+    <link rel="stylesheet" href="/app.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="workspace">
+        <header class="topbar">
+          <div>
+            <h1>PCA Tree Console</h1>
+            <p id="namespaceLine">Namespace: not initialized</p>
+          </div>
+          <div class="top-actions">
+            <button id="initButton" class="primary" type="button">Generate Master</button>
+            <button id="resetButton" type="button" title="Clear UI state">Reset</button>
+          </div>
+        </header>
+
+        <section class="main-grid">
+          <div class="tree-panel">
+            <div class="tree-toolbar">
+              <div class="segmented" role="tablist" aria-label="Node type filter">
+                <button class="segment active" type="button" data-filter="all">All</button>
+                <button class="segment" type="button" data-filter="Identity">Identity</button>
+                <button class="segment" type="button" data-filter="Encryption">Encryption</button>
+              </div>
+              <span id="nodeCount">0 nodes</span>
+            </div>
+            <div id="tree" class="tree" aria-live="polite"></div>
+          </div>
+
+          <aside class="inspector">
+            <div class="inspector-section">
+              <h2>Selected Node</h2>
+              <dl id="selectedDetails" class="details"></dl>
+            </div>
+            <div class="inspector-section">
+              <h2>Derivation Source</h2>
+              <div id="sourceControls" class="form-grid"></div>
+            </div>
+            <div class="inspector-section">
+              <h2>Create Node</h2>
+              <div id="forms"></div>
+            </div>
+          </aside>
+        </section>
+      </section>
+
+      <aside class="command-rail">
+        <header>
+          <h2>PCACLI</h2>
+          <button id="clearLog" type="button" title="Clear command log">Clear</button>
+        </header>
+        <div id="commandLog" class="command-log"></div>
+      </aside>
+    </main>
+
+    <template id="commandEntryTemplate">
+      <article class="command-entry">
+        <div class="entry-meta"></div>
+        <pre class="entry-command"></pre>
+        <pre class="entry-output"></pre>
+      </article>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
