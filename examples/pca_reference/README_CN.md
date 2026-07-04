@@ -22,6 +22,7 @@
 - Identity、Generation、Vault 职责分离。
 - Identity 使用 Ed25519。
 - Vault 通过 PyNaCl/libsodium 使用 XChaCha20-Poly1305，不手写密码算法轮函数。
+- Email 使用一次一密的 Ed25519 临时身份，并通过 PGPy 生成 OpenPGP 延迟绑定认证材料。
 - 签名 JSON 在签名前通过 `rfc8785` 执行 RFC 8785 JCS 规范化。
 - Revocation 验证先检查 Namespace，再检查签名。
 - CRL 与协议迁移示例使用 JCS + Ed25519 基础设施签名，并将 `signer_path` 固定为 `Identity/V1/PCA`。
@@ -109,7 +110,7 @@ python3 examples\pca_reference\pca_cli.py derive-node --parent-key-hex <PARENT_K
 DNS 绑定只是外部辅助发现，不能替代数学签名验证或带外信任建立：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py dns-binding --domain example.com --public-key-b64 <PUBLIC_KEY_B64>
+python3 examples\pca_reference\pca_cli.py dns-binding --namespace <NAMESPACE> --domain example.com --public-key-b64 <PUBLIC_KEY_B64>
 ```
 
 返回值应发布为：
@@ -143,6 +144,34 @@ python3 examples\pca_reference\pca_cli.py bip32-seed --master-hex <MASTER_HEX> -
 ```
 
 Generation keys 不建立公开信任。
+
+## Email
+
+使用全新临时邮件身份签署一封邮件：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-sign --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --input message.eml --signature message.email-sig.json
+```
+
+验证邮件签名：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-verify --input message.eml --signature message.email-sig.json
+```
+
+创建独立分发的延迟绑定证明：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-bind --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --email-signature message.email-sig.json --issued-at 2026-07-04T00:00:00Z --binding message.binding.asc.json
+```
+
+验证延迟绑定证明：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-verify-binding --email-signature message.email-sig.json --binding message.binding.asc.json --trusted-parent-public-key-b64 <PARENT_PUBLIC_KEY_B64>
+```
+
+`email-sign` 默认为每封邮件生成新的 256-bit `RandomEmailId`，路径为 `Identity/V1/<Persona>/<IdentityNode>/Email/Ephemeral/<RandomEmailId>`。延迟绑定证明是 detached proof，不是中心化清单；其中包含 OpenPGP public key armor 和 `0x10` 通用认证签名，或通过 `--signature-type 0x18` 生成的绑定子密钥 OpenPGP public key block。
 
 ## Vault
 
@@ -190,19 +219,19 @@ python3 examples\pca_reference\pca_cli.py verify-revocation --public-key-b64 <EM
 签署 CRL：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py sign-crl --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --revoked-identifiers revoked-identifiers.txt
+python3 examples\pca_reference\pca_cli.py sign-crl --namespace <NAMESPACE> --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --revoked-identifiers revoked-identifiers.txt
 ```
 
 验证 CRL：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl
+python3 examples\pca_reference\pca_cli.py verify-crl --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl
 ```
 
 检查单个 identifier：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl --identifier <SHA256_IDENTIFIER_HEX>
+python3 examples\pca_reference\pca_cli.py verify-crl --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl --identifier <SHA256_IDENTIFIER_HEX>
 ```
 
 参考 CRL 实现只接受 `signer_path = Identity/V1/PCA`，不查询 DNS，也不把 HTTPS 托管路径视为授权。
@@ -212,13 +241,13 @@ python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA
 签署协议迁移声明：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py sign-migration --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --from-protocol PCA-v1.2 --to-protocol PCA-v1.3 --migration-text "Upgrade serialization rules"
+python3 examples\pca_reference\pca_cli.py sign-migration --namespace <NAMESPACE> --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --from-protocol PCA-v1.2 --to-protocol PCA-v1.3 --migration-text "Upgrade serialization rules"
 ```
 
 验证协议迁移声明：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-migration --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --statement migration.json
+python3 examples\pca_reference\pca_cli.py verify-migration --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --statement migration.json
 ```
 
 协议迁移声明不是紧急废止声明，也不能复活、覆盖或缩小已经生效的 Namespace 废止结果。
@@ -229,6 +258,7 @@ python3 examples\pca_reference\pca_cli.py verify-migration --public-key-b64 <PCA
 - `pca_core/encoding.py`：Namespace、Uppercase HEX、Canonical Info Path、File ID、UTC 时间戳校验。
 - `pca_core/hkdf.py`：HKDF-SHA-512 与层级派生。
 - `pca_core/identity.py`：Ed25519 identity seed、公钥与签名 helper。
+- `pca_core/email_identity.py`：邮件临时身份、邮件签名验证、OpenPGP 延迟绑定证明。
 - `pca_core/generation.py`：Generation secret 和 64 字节 BIP32 seed。
 - `pca_core/xchacha20poly1305.py`：PyNaCl/libsodium XChaCha20-Poly1305 wrapper，不手写密码算法。
 - `pca_core/vault.py`：Vault 文件加密、AAD、nonce、metadata。
@@ -236,7 +266,7 @@ python3 examples\pca_reference\pca_cli.py verify-migration --public-key-b64 <PCA
 - `pca_core/revocation.py`：紧急废止声明签名与验证。
 - `pca_core/crl.py`：CRL 签名与验证。
 - `pca_core/migration.py`：协议迁移声明签名与验证。
-- `tests/`：派生、路径校验、Vault 认证、JCS、revocation、CRL、migration 测试。
+- `tests/`：派生、路径校验、Vault 认证、JCS、email、revocation、全 CLI 废止拦截、CRL、migration 测试。
 
 ## 常见错误
 

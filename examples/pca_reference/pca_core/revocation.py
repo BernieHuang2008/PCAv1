@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
 from .constants import ED25519_SEED_BYTES, ED25519_SIGNATURE_BYTES
 from .encoding import ensure_bytes_length, validate_iso8601_z, validate_namespace
-from .errors import PCAAuthenticationError, PCAValidationError
+from .errors import PCAAuthenticationError, PCARevokedNamespaceError, PCAValidationError
 from .jcs import canonicalize_bytes
 
 _REQUIRED_FIELDS = {"namespace", "reason", "revoked_at", "signature", "version"}
@@ -113,3 +113,18 @@ def verify_revocation_statement(
         reason="namespace revoked",
         successor_namespace_hint=hint,
     )
+
+
+def require_namespace_not_revoked(
+    statement: dict[str, Any] | None,
+    trusted_namespace: str,
+    emergency_public_key_b64: str | None,
+) -> None:
+    """Reject operational use of a namespace once a valid revocation is known."""
+    if statement is None:
+        return
+    if not emergency_public_key_b64:
+        raise PCAValidationError("emergency public key is required to enforce a revocation statement")
+    check = verify_revocation_statement(statement, trusted_namespace, emergency_public_key_b64)
+    if check.revoked:
+        raise PCARevokedNamespaceError("namespace is revoked; refuse subsequent PCA operations")

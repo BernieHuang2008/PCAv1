@@ -23,6 +23,7 @@ The implementation follows these core PCA rules:
 - Identity, Generation, and Vault responsibilities stay separated.
 - Identity uses Ed25519.
 - Vault uses XChaCha20-Poly1305 through PyNaCl/libsodium, not a manual cipher implementation.
+- Email uses one-message Ed25519 identities and PGPy-generated OpenPGP certification material for delayed binding.
 - Signed JSON uses RFC 8785 JCS through the `rfc8785` package before signing.
 - Revocation verification checks Namespace first, then signature.
 - CRL and protocol migration examples use JCS + Ed25519 infrastructure signatures with `signer_path` fixed to `Identity/V1/PCA`.
@@ -171,7 +172,7 @@ python3 examples\pca_reference\pca_cli.py identity --master-hex <MASTER_HEX> --n
 Then create the DNS binding text:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py dns-binding --domain example.com --public-key-b64 <PUBLIC_KEY_B64>
+python3 examples\pca_reference\pca_cli.py dns-binding --namespace <NAMESPACE> --domain example.com --public-key-b64 <PUBLIC_KEY_B64>
 ```
 
 Publish the returned TXT record:
@@ -242,6 +243,34 @@ python3 examples\pca_reference\pca_cli.py bip32-seed --master-hex <MASTER_HEX> -
 
 Generation keys do not establish public trust. They are deterministic secrets.
 
+## Email Operations
+
+Sign one email with a fresh ephemeral identity:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-sign --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --input message.eml --signature message.email-sig.json
+```
+
+Verify the email signature:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-verify --input message.eml --signature message.email-sig.json
+```
+
+Create a detached delayed-binding proof:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-bind --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --email-signature message.email-sig.json --issued-at 2026-07-04T00:00:00Z --binding message.binding.asc.json
+```
+
+Verify the delayed-binding proof:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-verify-binding --email-signature message.email-sig.json --binding message.binding.asc.json --trusted-parent-public-key-b64 <PARENT_PUBLIC_KEY_B64>
+```
+
+Email signing creates a new 256-bit `RandomEmailId` by default and signs the message with `Identity/V1/<Persona>/<IdentityNode>/Email/Ephemeral/<RandomEmailId>`. Delayed binding is distributed as a detached proof. It includes OpenPGP public key armor and either a `0x10` generic certification signature or, when requested with `--signature-type 0x18`, a bound-subkey OpenPGP public key block.
+
 ## Vault Operations
 
 Encrypt a file:
@@ -307,19 +336,19 @@ Create a text file containing one revoked SHA-256 identifier per line, using 64-
 Sign a CRL with the PCA infrastructure identity:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py sign-crl --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --revoked-identifiers revoked-identifiers.txt
+python3 examples\pca_reference\pca_cli.py sign-crl --namespace <NAMESPACE> --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --revoked-identifiers revoked-identifiers.txt
 ```
 
 Verify a CRL with the trusted `Identity/V1/PCA` public key:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl
+python3 examples\pca_reference\pca_cli.py verify-crl --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl
 ```
 
 Check one identifier:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl --identifier <SHA256_IDENTIFIER_HEX>
+python3 examples\pca_reference\pca_cli.py verify-crl --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl --identifier <SHA256_IDENTIFIER_HEX>
 ```
 
 The reference CRL implementation accepts `signer_path = Identity/V1/PCA` only. It does not query DNS and does not treat the well-known HTTPS URL as authorization.
@@ -329,13 +358,13 @@ The reference CRL implementation accepts `signer_path = Identity/V1/PCA` only. I
 Sign a protocol migration statement with the PCA infrastructure identity:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py sign-migration --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --from-protocol PCA-v1.2 --to-protocol PCA-v1.3 --migration-text "Upgrade serialization rules"
+python3 examples\pca_reference\pca_cli.py sign-migration --namespace <NAMESPACE> --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --from-protocol PCA-v1.2 --to-protocol PCA-v1.3 --migration-text "Upgrade serialization rules"
 ```
 
 Verify it with the trusted `Identity/V1/PCA` public key:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py verify-migration --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --statement migration.json
+python3 examples\pca_reference\pca_cli.py verify-migration --namespace <NAMESPACE> --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --statement migration.json
 ```
 
 Protocol migration statements are not emergency revocation statements and do not revive, override, or narrow a revoked Namespace.
@@ -394,6 +423,10 @@ Implements HKDF-SHA-512 and hierarchical derivation. `derive_path_key` starts fr
 
 Derives Ed25519 private seeds from `Identity/V1/...` paths and exposes signing and public-key helpers.
 
+`pca_core/email_identity.py`
+
+Creates one-message email identities, verifies email signatures, and produces detached OpenPGP delayed-binding proofs.
+
 `pca_core/generation.py`
 
 Derives deterministic Generation secrets from `Encrypt/V1/Generation/...` paths. The BIP32 helper returns exactly 64 bytes.
@@ -436,7 +469,7 @@ Contains the browser UI.
 
 `tests/`
 
-Contains focused tests for deterministic derivation, parent derivation, path validation, Vault authentication, JCS behavior, revocation validation order, CRL signatures, and protocol migration signatures.
+Contains focused tests for deterministic derivation, parent derivation, path validation, Vault authentication, JCS behavior, email identity, delayed binding, revocation validation order, CLI revocation enforcement, CRL signatures, and protocol migration signatures.
 
 ## Operational Checklist
 

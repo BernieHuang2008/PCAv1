@@ -12,6 +12,12 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
 from pca_core.crl import is_identifier_revoked, sign_crl, verify_crl
+from pca_core.email_identity import (
+    sign_ephemeral_email,
+    sign_openpgp_delayed_binding,
+    verify_ephemeral_email,
+    verify_openpgp_delayed_binding,
+)
 from pca_core.encoding import (
     generate_master_secret,
     generate_namespace,
@@ -26,6 +32,7 @@ from pca_core.migration import sign_protocol_migration_statement, verify_protoco
 from pca_core.revocation import (
     generate_emergency_private_key,
     raw_public_key_b64,
+    require_namespace_not_revoked,
     sign_revocation_statement,
     verify_revocation_statement,
 )
@@ -87,6 +94,25 @@ def add_source_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--parent-path")
 
 
+def add_revocation_guard_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--revocation-statement", help="verified revocation JSON to enforce before operation")
+    parser.add_argument("--emergency-public-key-b64", help="trusted emergency revocation public key")
+
+
+def enforce_revocation_guard(args: argparse.Namespace, namespace: str | None = None) -> None:
+    statement_path = getattr(args, "revocation_statement", None)
+    emergency_public_key = getattr(args, "emergency_public_key_b64", None)
+    if not statement_path and not emergency_public_key:
+        return
+    if not statement_path or not emergency_public_key:
+        raise PCAValidationError("provide both --revocation-statement and --emergency-public-key-b64")
+    trusted_namespace = namespace or getattr(args, "namespace", None)
+    if not trusted_namespace:
+        raise PCAValidationError("namespace is required to enforce a revocation statement")
+    statement = loads_no_duplicates(Path(statement_path).read_text(encoding="utf-8"))
+    require_namespace_not_revoked(statement, trusted_namespace, emergency_public_key)
+
+
 def note(message: str) -> None:
     print(f"note: {message}", file=sys.stderr, flush=True)
 
@@ -115,6 +141,7 @@ def cmd_init(_: argparse.Namespace) -> None:
 
 
 def cmd_identity(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     if getattr(args, "master_hex", None) and not _has_parent(args):
         private_key = derive_identity_private_key(_master(args.master_hex), args.namespace, args.path)
         seed = derive_identity_seed(_master(args.master_hex), args.namespace, args.path)
@@ -135,6 +162,7 @@ def cmd_identity(args: argparse.Namespace) -> None:
 
 
 def cmd_derive_node(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     key = _derive_node_key(args, args.path, args.length)
     print(
         json.dumps(
@@ -150,6 +178,7 @@ def cmd_derive_node(args: argparse.Namespace) -> None:
 
 
 def cmd_generation(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     if getattr(args, "master_hex", None) and not _has_parent(args):
         secret = derive_generation_secret(_master(args.master_hex), args.namespace, args.path, args.length)
     else:
@@ -158,6 +187,7 @@ def cmd_generation(args: argparse.Namespace) -> None:
 
 
 def cmd_bip32(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     path = f"Encrypt/V1/Generation/Bitcoin/{args.network}"
     if getattr(args, "master_hex", None) and not _has_parent(args):
         seed = derive_bip32_master_seed(_master(args.master_hex), args.namespace, args.network)
@@ -167,6 +197,7 @@ def cmd_bip32(args: argparse.Namespace) -> None:
 
 
 def cmd_vault_encrypt(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     plaintext = Path(args.input).read_bytes()
     encrypted = encrypt_file_bytes(_master(args.master_hex), args.namespace, args.permission_path, plaintext)
     Path(args.output).write_bytes(encrypted.data)
@@ -185,6 +216,7 @@ def cmd_vault_encrypt(args: argparse.Namespace) -> None:
 
 
 def cmd_vault_decrypt(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     encrypted = Path(args.input).read_bytes()
     plaintext = decrypt_file_bytes(_master(args.master_hex), args.namespace, args.permission_path, args.file_id, encrypted)
     Path(args.output).write_bytes(plaintext)
@@ -192,6 +224,7 @@ def cmd_vault_decrypt(args: argparse.Namespace) -> None:
 
 
 def cmd_vault_permission(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     full_path = vault_permission_full_path(args.permission_path)
     if getattr(args, "master_hex", None) and not _has_parent(args):
         key = derive_permission_node_key(_master(args.master_hex), args.namespace, args.permission_path)
@@ -211,6 +244,7 @@ def cmd_vault_permission(args: argparse.Namespace) -> None:
 
 
 def cmd_vault_file_key(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     file_id = args.file_id or generate_file_id()
     full_permission_path = vault_permission_full_path(args.permission_path)
     if getattr(args, "master_hex", None) and not _has_parent(args):
@@ -235,6 +269,7 @@ def cmd_vault_file_key(args: argparse.Namespace) -> None:
 
 
 def cmd_sign_revocation(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     private_seed = parse_upper_hex(args.private_seed_hex, 32, "Emergency revocation private seed")
     statement = sign_revocation_statement(
         private_seed,
@@ -261,6 +296,61 @@ def cmd_verify_revocation(args: argparse.Namespace) -> None:
         )
 
 
+def cmd_email_sign(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
+    message = Path(args.input).read_bytes()
+    statement = sign_ephemeral_email(
+        _master(args.master_hex),
+        args.namespace,
+        args.parent_path,
+        message,
+    )
+    output = canonicalize(statement)
+    if args.signature:
+        Path(args.signature).write_text(output, encoding="utf-8")
+    print(output, flush=True)
+    note("this email used a fresh RandomEmailId and a one-message Ed25519 identity.")
+
+
+def cmd_email_verify(args: argparse.Namespace) -> None:
+    message = Path(args.input).read_bytes()
+    statement = loads_no_duplicates(Path(args.signature).read_text(encoding="utf-8"))
+    enforce_revocation_guard(args, statement.get("namespace"))
+    payload = verify_ephemeral_email(message, statement)
+    print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
+
+
+def cmd_email_bind(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
+    signature_statement = loads_no_duplicates(Path(args.email_signature).read_text(encoding="utf-8"))
+    binding = sign_openpgp_delayed_binding(
+        _master(args.master_hex),
+        args.namespace,
+        args.parent_path,
+        signature_statement,
+        args.issued_at,
+        signature_type=args.signature_type,
+        signer_user_id=args.signer_user_id,
+    )
+    output = canonicalize(binding)
+    if args.binding:
+        Path(args.binding).write_text(output, encoding="utf-8")
+    print(output, flush=True)
+    note("distribute this detached delayed-binding proof only to recipients who should learn the grouping.")
+
+
+def cmd_email_verify_binding(args: argparse.Namespace) -> None:
+    signature_statement = loads_no_duplicates(Path(args.email_signature).read_text(encoding="utf-8"))
+    binding_statement = loads_no_duplicates(Path(args.binding).read_text(encoding="utf-8"))
+    enforce_revocation_guard(args, binding_statement.get("namespace"))
+    payload = verify_openpgp_delayed_binding(
+        signature_statement,
+        binding_statement,
+        trusted_parent_public_key_b64=args.trusted_parent_public_key_b64,
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
+
+
 def _hex_lines(path: str) -> list[str]:
     values: list[str] = []
     for line in Path(path).read_text(encoding="utf-8").splitlines():
@@ -272,12 +362,14 @@ def _hex_lines(path: str) -> list[str]:
 
 
 def cmd_sign_crl(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     private_seed = parse_upper_hex(args.private_seed_hex, 32, "PCA infrastructure private seed")
     crl = sign_crl(private_seed, args.issued_at, _hex_lines(args.revoked_identifiers))
     print(canonicalize(crl), flush=True)
 
 
 def cmd_verify_crl(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     crl = loads_no_duplicates(Path(args.crl).read_text(encoding="utf-8"))
     if args.identifier:
         revoked = is_identifier_revoked(crl, args.public_key_b64, args.identifier)
@@ -288,6 +380,7 @@ def cmd_verify_crl(args: argparse.Namespace) -> None:
 
 
 def cmd_sign_migration(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     private_seed = parse_upper_hex(args.private_seed_hex, 32, "PCA infrastructure private seed")
     statement = sign_protocol_migration_statement(
         private_seed,
@@ -300,12 +393,14 @@ def cmd_sign_migration(args: argparse.Namespace) -> None:
 
 
 def cmd_verify_migration(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     statement = loads_no_duplicates(Path(args.statement).read_text(encoding="utf-8"))
     payload = verify_protocol_migration_statement(statement, args.public_key_b64)
     print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
 
 
 def cmd_dns_binding(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
     try:
         public_key = base64.b64decode(args.public_key_b64, validate=True)
     except Exception as exc:
@@ -336,12 +431,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     identity = sub.add_parser("identity", help="derive an Ed25519 identity key from an Identity path")
     add_source_args(identity)
+    add_revocation_guard_args(identity)
     identity.add_argument("--namespace", required=True)
     identity.add_argument("--path", required=True)
     identity.set_defaults(func=cmd_identity)
 
     derive_node = sub.add_parser("derive-node", help="derive a generic HKDF tree node")
     add_source_args(derive_node)
+    add_revocation_guard_args(derive_node)
     derive_node.add_argument("--namespace", required=True)
     derive_node.add_argument("--path", required=True)
     derive_node.add_argument("--length", type=int, choices=[32, 64], default=64)
@@ -349,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     generation = sub.add_parser("generation", help="derive deterministic Generation bytes")
     add_source_args(generation)
+    add_revocation_guard_args(generation)
     generation.add_argument("--namespace", required=True)
     generation.add_argument("--path", required=True)
     generation.add_argument("--length", type=int, choices=[32, 64], default=32)
@@ -356,11 +454,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     bip32 = sub.add_parser("bip32-seed", help="derive a 64-byte BIP32 master seed")
     add_source_args(bip32)
+    add_revocation_guard_args(bip32)
     bip32.add_argument("--namespace", required=True)
     bip32.add_argument("--network", choices=["Mainnet", "Testnet"], default="Mainnet")
     bip32.set_defaults(func=cmd_bip32)
 
     enc = sub.add_parser("vault-encrypt", help="encrypt a file using PCA Vault rules")
+    add_revocation_guard_args(enc)
     enc.add_argument("--master-hex", required=True)
     enc.add_argument("--namespace", required=True)
     enc.add_argument("--permission-path", required=True)
@@ -370,6 +470,7 @@ def build_parser() -> argparse.ArgumentParser:
     enc.set_defaults(func=cmd_vault_encrypt)
 
     dec = sub.add_parser("vault-decrypt", help="decrypt a file using PCA Vault rules")
+    add_revocation_guard_args(dec)
     dec.add_argument("--master-hex", required=True)
     dec.add_argument("--namespace", required=True)
     dec.add_argument("--permission-path", required=True)
@@ -380,18 +481,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     permission = sub.add_parser("vault-permission", help="derive a Vault permission node key")
     add_source_args(permission)
+    add_revocation_guard_args(permission)
     permission.add_argument("--namespace", required=True)
     permission.add_argument("--permission-path", required=True)
     permission.set_defaults(func=cmd_vault_permission)
 
     file_key = sub.add_parser("vault-file-key", help="derive a Vault per-file key without encrypting file bytes")
     add_source_args(file_key)
+    add_revocation_guard_args(file_key)
     file_key.add_argument("--namespace", required=True)
     file_key.add_argument("--permission-path", required=True)
     file_key.add_argument("--file-id")
     file_key.set_defaults(func=cmd_vault_file_key)
 
     sign_revocation = sub.add_parser("sign-revocation", help="sign an emergency revocation statement")
+    add_revocation_guard_args(sign_revocation)
     sign_revocation.add_argument("--private-seed-hex", required=True)
     sign_revocation.add_argument("--namespace", required=True)
     sign_revocation.add_argument("--revoked-at", required=True)
@@ -405,19 +509,59 @@ def build_parser() -> argparse.ArgumentParser:
     verify_revocation.add_argument("--statement", required=True)
     verify_revocation.set_defaults(func=cmd_verify_revocation)
 
+    email_sign = sub.add_parser("email-sign", help="sign one email with a fresh ephemeral Ed25519 identity")
+    add_revocation_guard_args(email_sign)
+    email_sign.add_argument("--master-hex", required=True)
+    email_sign.add_argument("--namespace", required=True)
+    email_sign.add_argument("--parent-path", required=True)
+    email_sign.add_argument("--input", required=True)
+    email_sign.add_argument("--signature")
+    email_sign.set_defaults(func=cmd_email_sign)
+
+    email_verify = sub.add_parser("email-verify", help="verify an ephemeral email signature statement")
+    add_revocation_guard_args(email_verify)
+    email_verify.add_argument("--input", required=True)
+    email_verify.add_argument("--signature", required=True)
+    email_verify.set_defaults(func=cmd_email_verify)
+
+    email_bind = sub.add_parser("email-bind", help="create a detached OpenPGP-style delayed binding proof")
+    add_revocation_guard_args(email_bind)
+    email_bind.add_argument("--master-hex", required=True)
+    email_bind.add_argument("--namespace", required=True)
+    email_bind.add_argument("--parent-path", required=True)
+    email_bind.add_argument("--email-signature", required=True)
+    email_bind.add_argument("--issued-at", required=True)
+    email_bind.add_argument("--signature-type", choices=["0x10", "0x18"], default="0x10")
+    email_bind.add_argument("--signer-user-id")
+    email_bind.add_argument("--binding")
+    email_bind.set_defaults(func=cmd_email_bind)
+
+    email_verify_binding = sub.add_parser("email-verify-binding", help="verify a detached delayed binding proof")
+    add_revocation_guard_args(email_verify_binding)
+    email_verify_binding.add_argument("--email-signature", required=True)
+    email_verify_binding.add_argument("--binding", required=True)
+    email_verify_binding.add_argument("--trusted-parent-public-key-b64")
+    email_verify_binding.set_defaults(func=cmd_email_verify_binding)
+
     sign_crl_parser = sub.add_parser("sign-crl", help="sign a PCA CRL with Identity/V1/PCA")
+    add_revocation_guard_args(sign_crl_parser)
+    sign_crl_parser.add_argument("--namespace", required=True)
     sign_crl_parser.add_argument("--private-seed-hex", required=True)
     sign_crl_parser.add_argument("--issued-at", required=True)
     sign_crl_parser.add_argument("--revoked-identifiers", required=True)
     sign_crl_parser.set_defaults(func=cmd_sign_crl)
 
     verify_crl_parser = sub.add_parser("verify-crl", help="verify a PCA CRL with the trusted Identity/V1/PCA public key")
+    add_revocation_guard_args(verify_crl_parser)
+    verify_crl_parser.add_argument("--namespace", required=True)
     verify_crl_parser.add_argument("--public-key-b64", required=True)
     verify_crl_parser.add_argument("--crl", required=True)
     verify_crl_parser.add_argument("--identifier")
     verify_crl_parser.set_defaults(func=cmd_verify_crl)
 
     sign_migration = sub.add_parser("sign-migration", help="sign a protocol migration statement with Identity/V1/PCA")
+    add_revocation_guard_args(sign_migration)
+    sign_migration.add_argument("--namespace", required=True)
     sign_migration.add_argument("--private-seed-hex", required=True)
     sign_migration.add_argument("--issued-at", required=True)
     sign_migration.add_argument("--from-protocol", required=True)
@@ -426,11 +570,15 @@ def build_parser() -> argparse.ArgumentParser:
     sign_migration.set_defaults(func=cmd_sign_migration)
 
     verify_migration = sub.add_parser("verify-migration", help="verify a protocol migration statement")
+    add_revocation_guard_args(verify_migration)
+    verify_migration.add_argument("--namespace", required=True)
     verify_migration.add_argument("--public-key-b64", required=True)
     verify_migration.add_argument("--statement", required=True)
     verify_migration.set_defaults(func=cmd_verify_migration)
 
     dns_binding = sub.add_parser("dns-binding", help="create the DNS TXT binding for an Identity public key")
+    add_revocation_guard_args(dns_binding)
+    dns_binding.add_argument("--namespace", required=True)
     dns_binding.add_argument("--domain", required=True)
     dns_binding.add_argument("--public-key-b64", required=True)
     dns_binding.set_defaults(func=cmd_dns_binding)
