@@ -23,7 +23,7 @@ from .encoding import (
     validate_namespace,
 )
 from .errors import PCAAuthenticationError, PCAValidationError
-from .identity import derive_identity_private_key, derive_identity_seed, public_key_bytes
+from .identity import derive_identity_seed, public_key_bytes
 from .jcs import canonicalize_bytes
 
 EMAIL_ID_BYTES = 32
@@ -152,19 +152,15 @@ def email_ephemeral_path(parent_path: str, random_email_id: str) -> str:
     return f"{parent}/Email/Ephemeral/{random_email_id}"
 
 
-def sign_ephemeral_email(
-    master_secret: bytes,
+def _sign_ephemeral_email_with_seed(
+    seed: bytes,
     namespace: str,
-    parent_identity_path: str,
+    email_id: str,
+    signer_path: str,
     message: bytes,
-    *,
-    random_email_id: str | None = None,
 ) -> dict[str, Any]:
-    validate_namespace(namespace)
-    email_id = random_email_id or random_upper_hex(EMAIL_ID_BYTES)
-    signer_path = email_ephemeral_path(parent_identity_path, email_id)
-    private_key = derive_identity_private_key(master_secret, namespace, signer_path)
-    seed = derive_identity_seed(master_secret, namespace, signer_path)
+    ensure_bytes_length(seed, ED25519_SEED_BYTES, "Ed25519 private seed")
+    private_key = ed25519.Ed25519PrivateKey.from_private_bytes(seed)
     signature = private_key.sign(message)
     public_key_raw = public_key_bytes(private_key)
     pgp_key = _pgp_key_from_seed(
@@ -184,6 +180,35 @@ def sign_ephemeral_email(
         "statement_type": EMAIL_SIGNATURE_TYPE,
         "version": 1,
     }
+
+
+def sign_ephemeral_email(
+    master_secret: bytes,
+    namespace: str,
+    parent_identity_path: str,
+    message: bytes,
+    *,
+    random_email_id: str | None = None,
+) -> dict[str, Any]:
+    validate_namespace(namespace)
+    email_id = random_email_id or random_upper_hex(EMAIL_ID_BYTES)
+    signer_path = email_ephemeral_path(parent_identity_path, email_id)
+    seed = derive_identity_seed(master_secret, namespace, signer_path)
+    return _sign_ephemeral_email_with_seed(seed, namespace, email_id, signer_path, message)
+
+
+def sign_ephemeral_email_with_seed(
+    seed: bytes,
+    namespace: str,
+    parent_identity_path: str,
+    message: bytes,
+    *,
+    random_email_id: str | None = None,
+) -> dict[str, Any]:
+    validate_namespace(namespace)
+    email_id = random_email_id or random_upper_hex(EMAIL_ID_BYTES)
+    signer_path = email_ephemeral_path(parent_identity_path, email_id)
+    return _sign_ephemeral_email_with_seed(seed, namespace, email_id, signer_path, message)
 
 
 def verify_ephemeral_email(message: bytes, signature_statement: dict[str, Any]) -> dict[str, Any]:
@@ -225,8 +250,38 @@ def sign_openpgp_delayed_binding(
     signature_type: str = OPENPGP_GENERIC_CERTIFICATION,
     signer_user_id: str | None = None,
 ) -> dict[str, Any]:
+    parent_path = validate_email_parent_path(parent_identity_path)
+    parent_seed = derive_identity_seed(master_secret, namespace, parent_path)
+    subject_seed = None
+    if signature_type == OPENPGP_SUBKEY_BINDING:
+        ephemeral_path = validate_identity_path(email_signature_statement.get("signer_path"))
+        subject_seed = derive_identity_seed(master_secret, namespace, ephemeral_path)
+    return sign_openpgp_delayed_binding_with_parent_seed(
+        parent_seed,
+        namespace,
+        parent_path,
+        email_signature_statement,
+        issued_at,
+        signature_type=signature_type,
+        signer_user_id=signer_user_id,
+        subject_seed=subject_seed,
+    )
+
+
+def sign_openpgp_delayed_binding_with_parent_seed(
+    parent_seed: bytes,
+    namespace: str,
+    parent_identity_path: str,
+    email_signature_statement: dict[str, Any],
+    issued_at: str,
+    *,
+    signature_type: str = OPENPGP_GENERIC_CERTIFICATION,
+    signer_user_id: str | None = None,
+    subject_seed: bytes | None = None,
+) -> dict[str, Any]:
     validate_namespace(namespace)
     parent_path = validate_email_parent_path(parent_identity_path)
+    ensure_bytes_length(parent_seed, ED25519_SEED_BYTES, "parent Ed25519 private seed")
     validate_iso8601_z(issued_at, "issued_at")
     if signature_type not in OPENPGP_ALLOWED_SIGNATURE_TYPES:
         raise PCAValidationError("signature_type must be 0x10 or 0x18")
@@ -235,8 +290,7 @@ def sign_openpgp_delayed_binding(
     ephemeral_public = _decode_b64(
         email_signature_statement.get("public_key_b64"), ED25519_SEED_BYTES, "email public key"
     )
-    parent_seed = derive_identity_seed(master_secret, namespace, parent_path)
-    parent_private = derive_identity_private_key(master_secret, namespace, parent_path)
+    parent_private = ed25519.Ed25519PrivateKey.from_private_bytes(parent_seed)
     parent_public = public_key_bytes(parent_private)
     parent_pgp = _pgp_key_from_seed(
         parent_seed,
@@ -277,7 +331,9 @@ def sign_openpgp_delayed_binding(
         certification = _certify_subject_uid(parent_pgp, subject_pgp)
         payload["openpgp_certification_signature_armored"] = str(certification)
     else:
-        subject_seed = derive_identity_seed(master_secret, namespace, payload["ephemeral_path"])
+        if subject_seed is None:
+            raise PCAValidationError("OpenPGP subkey binding requires the ephemeral subject seed")
+        ensure_bytes_length(subject_seed, ED25519_SEED_BYTES, "subject Ed25519 private seed")
         subject_subkey = _pgp_key_from_seed(
             subject_seed,
             f"PCA Ephemeral Email Subkey {email_signature_statement.get('email_id')}",

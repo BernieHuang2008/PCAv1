@@ -46,6 +46,21 @@ def encrypt_file_bytes(master_secret: bytes, namespace: str, permission_path: st
         raise PCAValidationError("plaintext must be bytes")
     file_id = generate_file_id()
     permission_key = derive_permission_node_key(master_secret, namespace, permission_path)
+    return encrypt_file_bytes_with_permission_key(permission_key, namespace, permission_path, plaintext, file_id=file_id)
+
+
+def encrypt_file_bytes_with_permission_key(
+    permission_node_key: bytes,
+    namespace: str,
+    permission_path: str,
+    plaintext: bytes,
+    *,
+    file_id: str | None = None,
+) -> VaultCiphertext:
+    if not isinstance(plaintext, bytes):
+        raise PCAValidationError("plaintext must be bytes")
+    file_id = file_id or generate_file_id()
+    permission_key = permission_node_key
     per_file_key = derive_per_file_key(permission_key, namespace, file_id)
     nonce = secrets.token_bytes(XCHACHA20_NONCE_BYTES)
     full_path = vault_file_full_path(permission_path, file_id)
@@ -61,13 +76,20 @@ def encrypt_file_bytes(master_secret: bytes, namespace: str, permission_path: st
 def decrypt_file_bytes(
     master_secret: bytes, namespace: str, permission_path: str, file_id: str, encrypted: bytes
 ) -> bytes:
+    permission_key = derive_permission_node_key(master_secret, namespace, permission_path)
+    return decrypt_file_bytes_with_permission_key(permission_key, namespace, permission_path, file_id, encrypted)
+
+
+def decrypt_file_bytes_with_permission_key(
+    permission_node_key: bytes, namespace: str, permission_path: str, file_id: str, encrypted: bytes
+) -> bytes:
     if not isinstance(encrypted, bytes):
         raise PCAValidationError("encrypted data must be bytes")
     if len(encrypted) < XCHACHA20_NONCE_BYTES + 16:
         raise PCAValidationError("encrypted Vault data is too short")
     nonce = encrypted[:XCHACHA20_NONCE_BYTES]
     ciphertext_and_tag = encrypted[XCHACHA20_NONCE_BYTES:]
-    permission_key = derive_permission_node_key(master_secret, namespace, permission_path)
+    permission_key = permission_node_key
     per_file_key = derive_per_file_key(permission_key, namespace, file_id)
     full_path = vault_file_full_path(permission_path, file_id)
     return xchacha20poly1305_decrypt(
@@ -76,4 +98,3 @@ def decrypt_file_bytes(
         ciphertext_and_tag,
         canonical_path_bytes(full_path),
     )
-

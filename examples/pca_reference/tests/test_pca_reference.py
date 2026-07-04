@@ -480,6 +480,118 @@ class PCAReferenceTests(unittest.TestCase):
             self.assertEqual(statement["email_id"], email_id)
             self.assertTrue(statement["signer_path"].endswith(f"/Email/Ephemeral/{email_id}"))
 
+    def test_cli_vault_encrypt_decrypt_accepts_parent_key_source(self) -> None:
+        permission_path = "Finance"
+        parent_path = "Encrypt/V1/Vault/Finance"
+        parent_key = derive_path_key(MASTER, NAMESPACE, parent_path, 64).hex().upper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plaintext_path = root / "secret.txt"
+            encrypted_path = root / "secret.pca"
+            decrypted_path = root / "secret.out"
+            metadata_path = root / "secret.meta.json"
+            plaintext_path.write_bytes(b"vault secret")
+            source_args = [
+                "--parent-key-hex",
+                parent_key,
+                "--parent-path",
+                parent_path,
+                "--namespace",
+                NAMESPACE,
+                "--permission-path",
+                permission_path,
+            ]
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                self.assertEqual(
+                    cli_main(
+                        [
+                            "vault-encrypt",
+                            *source_args,
+                            "--input",
+                            str(plaintext_path),
+                            "--output",
+                            str(encrypted_path),
+                            "--metadata",
+                            str(metadata_path),
+                        ]
+                    ),
+                    0,
+                )
+            metadata = loads_no_duplicates(metadata_path.read_text(encoding="utf-8"))
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                self.assertEqual(
+                    cli_main(
+                        [
+                            "vault-decrypt",
+                            *source_args,
+                            "--file-id",
+                            metadata["file_id"],
+                            "--input",
+                            str(encrypted_path),
+                            "--output",
+                            str(decrypted_path),
+                        ]
+                    ),
+                    0,
+                )
+            self.assertEqual(decrypted_path.read_bytes(), b"vault secret")
+
+    def test_cli_email_sign_and_bind_accept_parent_key_source(self) -> None:
+        parent_path = "Identity/V1/Alice/Identity2026/EmailCa"
+        parent_key = derive_path_key(MASTER, NAMESPACE, parent_path, 64).hex().upper()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            email_path = root / "alice.eml"
+            sig_path = root / "alice.email-sig.json"
+            binding_path = root / "alice.binding.json"
+            email_path.write_bytes(b"From: alice@example.com\r\n\r\nhello")
+            source_args = [
+                "--parent-key-hex",
+                parent_key,
+                "--parent-path",
+                parent_path,
+                "--namespace",
+                NAMESPACE,
+            ]
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                self.assertEqual(
+                    cli_main(
+                        [
+                            "email-sign",
+                            *source_args,
+                            "--input",
+                            str(email_path),
+                            "--random-email-id",
+                            "E" * 64,
+                            "--signature",
+                            str(sig_path),
+                        ]
+                    ),
+                    0,
+                )
+            statement = loads_no_duplicates(sig_path.read_text(encoding="utf-8"))
+            verify_ephemeral_email(email_path.read_bytes(), statement)
+            with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
+                self.assertEqual(
+                    cli_main(
+                        [
+                            "email-bind",
+                            *source_args,
+                            "--email-signature",
+                            str(sig_path),
+                            "--issued-at",
+                            "2026-07-04T00:00:00Z",
+                            "--signature-type",
+                            "0x18",
+                            "--binding",
+                            str(binding_path),
+                        ]
+                    ),
+                    0,
+                )
+            binding = loads_no_duplicates(binding_path.read_text(encoding="utf-8"))
+            self.assertEqual(verify_openpgp_delayed_binding(statement, binding)["parent_path"], parent_path)
+
     def test_cli_email_bind_accepts_external_openpgp_parent(self) -> None:
         email_sig = sign_ephemeral_email(
             MASTER,

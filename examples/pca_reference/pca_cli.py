@@ -15,11 +15,13 @@ from pca_core.crl import is_identifier_revoked, sign_crl, verify_crl
 from pca_core.email_identity import (
     EMAIL_ID_BYTES,
     OPENPGP_GENERIC_CERTIFICATION,
+    OPENPGP_SUBKEY_BINDING,
     EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN,
     PCA_PARENT_KEY_ORIGIN,
-    sign_ephemeral_email,
+    email_ephemeral_path,
+    sign_ephemeral_email_with_seed,
     sign_external_openpgp_delayed_binding,
-    sign_openpgp_delayed_binding,
+    sign_openpgp_delayed_binding_with_parent_seed,
     verify_ephemeral_email,
     verify_openpgp_delayed_binding,
 )
@@ -43,10 +45,10 @@ from pca_core.revocation import (
     verify_revocation_statement,
 )
 from pca_core.vault import (
-    decrypt_file_bytes,
+    decrypt_file_bytes_with_permission_key,
     derive_per_file_key,
     derive_permission_node_key,
-    encrypt_file_bytes,
+    encrypt_file_bytes_with_permission_key,
     vault_file_full_path,
     vault_permission_full_path,
 )
@@ -70,7 +72,7 @@ def _key_hex(hex_value: str, field: str) -> bytes:
 
 
 def _has_parent(args: argparse.Namespace) -> bool:
-    return bool(getattr(args, "parent_key_hex", None) or getattr(args, "parent_path", None))
+    return bool(getattr(args, "parent_key_hex", None))
 
 
 def _require_source(args: argparse.Namespace) -> None:
@@ -80,6 +82,8 @@ def _require_source(args: argparse.Namespace) -> None:
         return
     if getattr(args, "parent_key_hex", None) and getattr(args, "parent_path", None):
         return
+    if getattr(args, "parent_key_hex", None) or getattr(args, "parent_path", None):
+        raise PCAValidationError("provide both --parent-key-hex and --parent-path when using a parent key")
     raise PCAValidationError("provide --master-hex, or provide both --parent-key-hex and --parent-path")
 
 
@@ -92,6 +96,13 @@ def _derive_node_key(args: argparse.Namespace, target_path: str, length: int) ->
         return derive_path_key(master, args.namespace, target_path, length)
     parent_key = _key_hex(args.parent_key_hex, "Parent key")
     return derive_descendant_key(parent_key, args.namespace, args.parent_path, target_path, length)
+
+
+def _derive_vault_permission_key(args: argparse.Namespace) -> bytes:
+    full_path = vault_permission_full_path(args.permission_path)
+    if getattr(args, "master_hex", None) and not _has_parent(args):
+        return derive_permission_node_key(_master(args.master_hex), args.namespace, args.permission_path)
+    return _derive_node_key(args, full_path, 64)
 
 
 def add_source_args(parser: argparse.ArgumentParser) -> None:
@@ -237,7 +248,8 @@ def cmd_bip32(args: argparse.Namespace) -> None:
 def cmd_vault_encrypt(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     plaintext = Path(args.input).read_bytes()
-    encrypted = encrypt_file_bytes(_master(args.master_hex), args.namespace, args.permission_path, plaintext)
+    permission_key = _derive_vault_permission_key(args)
+    encrypted = encrypt_file_bytes_with_permission_key(permission_key, args.namespace, args.permission_path, plaintext)
     Path(args.output).write_bytes(encrypted.data)
     metadata = {
         "canonical_path": encrypted.canonical_path,
@@ -256,7 +268,10 @@ def cmd_vault_encrypt(args: argparse.Namespace) -> None:
 def cmd_vault_decrypt(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     encrypted = Path(args.input).read_bytes()
-    plaintext = decrypt_file_bytes(_master(args.master_hex), args.namespace, args.permission_path, args.file_id, encrypted)
+    permission_key = _derive_vault_permission_key(args)
+    plaintext = decrypt_file_bytes_with_permission_key(
+        permission_key, args.namespace, args.permission_path, args.file_id, encrypted
+    )
     Path(args.output).write_bytes(plaintext)
     print("decryption ok")
 
@@ -264,10 +279,7 @@ def cmd_vault_decrypt(args: argparse.Namespace) -> None:
 def cmd_vault_permission(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     full_path = vault_permission_full_path(args.permission_path)
-    if getattr(args, "master_hex", None) and not _has_parent(args):
-        key = derive_permission_node_key(_master(args.master_hex), args.namespace, args.permission_path)
-    else:
-        key = _derive_node_key(args, full_path, 64)
+    key = _derive_vault_permission_key(args)
     print(
         json.dumps(
             {
@@ -285,12 +297,14 @@ def cmd_vault_file_key(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     file_id = args.file_id or generate_file_id()
     full_permission_path = vault_permission_full_path(args.permission_path)
-    if getattr(args, "master_hex", None) and not _has_parent(args):
-        permission_key = derive_permission_node_key(_master(args.master_hex), args.namespace, args.permission_path)
-    elif args.parent_path == full_permission_path:
+    if (
+        getattr(args, "parent_key_hex", None)
+        and args.parent_path == full_permission_path
+        and not getattr(args, "master_hex", None)
+    ):
         permission_key = _key_hex(args.parent_key_hex, "Parent key")
     else:
-        permission_key = _derive_node_key(args, full_permission_path, 64)
+        permission_key = _derive_vault_permission_key(args)
     key = derive_per_file_key(permission_key, args.namespace, file_id)
     print(
         json.dumps(
@@ -342,13 +356,18 @@ def cmd_verify_revocation(args: argparse.Namespace) -> None:
 
 def cmd_email_sign(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
+    if not args.parent_path:
+        raise PCAValidationError("email signing requires --parent-path")
     message = Path(args.input).read_bytes()
-    statement = sign_ephemeral_email(
-        _master(args.master_hex),
+    email_id = args.random_email_id or random_upper_hex(EMAIL_ID_BYTES)
+    signer_path = email_ephemeral_path(args.parent_path, email_id)
+    seed = _derive_node_key(args, signer_path, 32)
+    statement = sign_ephemeral_email_with_seed(
+        seed,
         args.namespace,
         args.parent_path,
         message,
-        random_email_id=args.random_email_id,
+        random_email_id=email_id,
     )
     output = canonicalize(statement)
     if args.signature:
@@ -380,16 +399,21 @@ def cmd_email_bind(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     signature_statement = loads_no_duplicates(Path(args.email_signature).read_text(encoding="utf-8"))
     if args.parent_key_origin == PCA_PARENT_KEY_ORIGIN:
-        if not args.master_hex or not args.parent_path:
-            raise PCAValidationError("PCA identity binding requires --master-hex and --parent-path")
-        binding = sign_openpgp_delayed_binding(
-            _master(args.master_hex),
+        if not args.parent_path:
+            raise PCAValidationError("PCA identity binding requires --parent-path")
+        parent_seed = _derive_node_key(args, args.parent_path, 32)
+        subject_seed = None
+        if args.signature_type == OPENPGP_SUBKEY_BINDING:
+            subject_seed = _derive_node_key(args, signature_statement.get("signer_path"), 32)
+        binding = sign_openpgp_delayed_binding_with_parent_seed(
+            parent_seed,
             args.namespace,
             args.parent_path,
             signature_statement,
             args.issued_at,
             signature_type=args.signature_type,
             signer_user_id=args.signer_user_id,
+            subject_seed=subject_seed,
         )
     else:
         if not args.parent_pgp_private_key:
@@ -549,8 +573,8 @@ def build_parser() -> argparse.ArgumentParser:
     bip32.set_defaults(func=cmd_bip32)
 
     enc = sub.add_parser("vault-encrypt", help="encrypt a file using PCA Vault rules")
+    add_source_args(enc)
     add_revocation_guard_args(enc)
-    enc.add_argument("--master-hex", required=True)
     enc.add_argument("--namespace", required=True)
     enc.add_argument("--permission-path", required=True)
     enc.add_argument("--input", required=True)
@@ -559,8 +583,8 @@ def build_parser() -> argparse.ArgumentParser:
     enc.set_defaults(func=cmd_vault_encrypt)
 
     dec = sub.add_parser("vault-decrypt", help="decrypt a file using PCA Vault rules")
+    add_source_args(dec)
     add_revocation_guard_args(dec)
-    dec.add_argument("--master-hex", required=True)
     dec.add_argument("--namespace", required=True)
     dec.add_argument("--permission-path", required=True)
     dec.add_argument("--file-id", required=True)
@@ -613,10 +637,9 @@ def build_parser() -> argparse.ArgumentParser:
     verify_revocation.set_defaults(func=cmd_verify_revocation)
 
     email_sign = sub.add_parser("email-sign", help="sign one email with a fresh ephemeral Ed25519 identity")
+    add_source_args(email_sign)
     add_revocation_guard_args(email_sign)
-    email_sign.add_argument("--master-hex", required=True)
     email_sign.add_argument("--namespace", required=True)
-    email_sign.add_argument("--parent-path", required=True)
     email_sign.add_argument("--input", required=True)
     email_sign.add_argument("--random-email-id", help="pre-generated 256-bit Uppercase HEX RandomEmailId")
     email_sign.add_argument("--signature")
@@ -633,15 +656,14 @@ def build_parser() -> argparse.ArgumentParser:
     email_verify.set_defaults(func=cmd_email_verify)
 
     email_bind = sub.add_parser("email-bind", help="create a detached OpenPGP-style delayed binding proof")
+    add_source_args(email_bind)
     add_revocation_guard_args(email_bind)
     email_bind.add_argument(
         "--parent-key-origin",
         choices=[PCA_PARENT_KEY_ORIGIN, EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN],
         default=PCA_PARENT_KEY_ORIGIN,
     )
-    email_bind.add_argument("--master-hex")
     email_bind.add_argument("--namespace", required=True)
-    email_bind.add_argument("--parent-path")
     email_bind.add_argument("--parent-pgp-private-key", help="ASCII-armored external OpenPGP private key")
     email_bind.add_argument("--parent-pgp-passphrase", help="passphrase for protected external OpenPGP private key")
     email_bind.add_argument("--email-signature", required=True)
