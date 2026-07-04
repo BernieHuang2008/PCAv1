@@ -22,9 +22,10 @@ The implementation follows these core PCA rules:
 - Canonical Info Path is ASCII and stable.
 - Identity, Generation, and Vault responsibilities stay separated.
 - Identity uses Ed25519.
-- Vault uses XChaCha20-Poly1305.
-- Signed JSON uses canonical serialization before signing.
+- Vault uses XChaCha20-Poly1305 through PyNaCl/libsodium, not a manual cipher implementation.
+- Signed JSON uses RFC 8785 JCS through the `rfc8785` package before signing.
 - Revocation verification checks Namespace first, then signature.
+- CRL and protocol migration examples use JCS + Ed25519 infrastructure signatures with `signer_path` fixed to `Identity/V1/PCA`.
 
 One explicit reference choice is made in `pca_core/constants.py`: PCAv1.2 states that `TrustRootKey` is derived from Master Secret through HKDF, but the draft does not assign a literal info path for that exact edge. This implementation fixes it as:
 
@@ -33,6 +34,19 @@ PCA/V1/TrustRoot
 ```
 
 If the normative document later assigns a different value, update `TRUST_ROOT_INFO_PATH` in one place and regenerate test vectors.
+
+Recommended PCAv1.2 protocol change: add an explicit normative row for this edge, for example:
+
+```text
+TrustRootKey = HKDF-SHA-512(
+  IKM  = Master Secret,
+  salt = Namespace ID,
+  info = "PCA/V1/TrustRoot",
+  L    = 64
+)
+```
+
+Then state that `PCA/V1/TrustRoot` is a reserved Canonical Info Path, MUST NOT be used for Identity, Generation, Vault, CRL, migration, or application-defined nodes, and MUST remain stable for the lifetime of the `PCA-v1/<NamespaceID>` format family.
 
 ## Requirements
 
@@ -48,10 +62,18 @@ All commands below assume the repository root as the working directory.
 cd C:\Bernie\DevG\git\BernieHuang2008\PCAv1
 ```
 
+Install the declared standard crypto and canonicalization dependencies:
+
+```powershell
+python3 -m pip install -r examples\pca_reference\requirements.txt
+```
+
 Run tests:
 
 ```powershell
-python3 -B -m unittest discover examples\pca_reference\tests
+Push-Location examples\pca_reference
+python3 -B -m unittest discover tests
+Pop-Location
 ```
 
 ## Setup Manual
@@ -184,7 +206,7 @@ Manual hosting steps:
 - Keep backups of previously published revocation material.
 - If you publish through a CDN, understand its cache invalidation process before an emergency.
 
-The current example signs emergency revocation announcements. A production CRL workflow may include additional signed lists and certificate-chain validation. Do not treat HTTPS hosting itself as authorization.
+The example can sign and verify CRL JSON using RFC 8785 JCS and Ed25519. Do not treat HTTPS hosting itself as authorization.
 
 ## Day-to-Day Operations
 
@@ -278,6 +300,46 @@ Verification order:
 3. Verify the Ed25519 signature over canonicalized JSON without the `signature` field.
 4. If valid, reject subsequent operations under that Namespace.
 
+## CRL Operations
+
+Create a text file containing one revoked SHA-256 identifier per line, using 64-character Uppercase HEX.
+
+Sign a CRL with the PCA infrastructure identity:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py sign-crl --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --revoked-identifiers revoked-identifiers.txt
+```
+
+Verify a CRL with the trusted `Identity/V1/PCA` public key:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl
+```
+
+Check one identifier:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py verify-crl --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --crl revocation.crl --identifier <SHA256_IDENTIFIER_HEX>
+```
+
+The reference CRL implementation accepts `signer_path = Identity/V1/PCA` only. It does not query DNS and does not treat the well-known HTTPS URL as authorization.
+
+## Protocol Migration Statements
+
+Sign a protocol migration statement with the PCA infrastructure identity:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py sign-migration --private-seed-hex <PCA_INFRA_PRIVATE_SEED_HEX> --issued-at 2026-07-04T00:00:00Z --from-protocol PCA-v1.2 --to-protocol PCA-v1.3 --migration-text "Upgrade serialization rules"
+```
+
+Verify it with the trusted `Identity/V1/PCA` public key:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py verify-migration --public-key-b64 <PCA_INFRA_PUBLIC_KEY_B64> --statement migration.json
+```
+
+Protocol migration statements are not emergency revocation statements and do not revive, override, or narrow a revoked Namespace.
+
 ## Rebuild After Revocation
 
 Once a Namespace is validly revoked, treat it as permanently dead.
@@ -338,7 +400,7 @@ Derives deterministic Generation secrets from `Encrypt/V1/Generation/...` paths.
 
 `pca_core/xchacha20poly1305.py`
 
-Implements XChaCha20-Poly1305 using HChaCha20 plus IETF ChaCha20-Poly1305 from `cryptography`.
+Wraps PyNaCl/libsodium XChaCha20-Poly1305. No cipher rounds are implemented by hand.
 
 `pca_core/vault.py`
 
@@ -346,11 +408,19 @@ Implements Vault file encryption. Each file gets a 256-bit File ID, a fresh 192-
 
 `pca_core/jcs.py`
 
-Provides constrained canonical JSON serialization for signed PCA structures.
+Provides RFC 8785 JCS canonical JSON serialization for signed PCA structures.
 
 `pca_core/revocation.py`
 
 Signs and verifies emergency revocation statements.
+
+`pca_core/crl.py`
+
+Signs and verifies CRL JSON with the trusted `Identity/V1/PCA` public key.
+
+`pca_core/migration.py`
+
+Signs and verifies protocol migration statements with the trusted `Identity/V1/PCA` public key.
 
 `pca_cli.py`
 
@@ -366,7 +436,7 @@ Contains the browser UI.
 
 `tests/`
 
-Contains focused tests for deterministic derivation, parent derivation, path validation, Vault authentication, JCS behavior, and revocation validation order.
+Contains focused tests for deterministic derivation, parent derivation, path validation, Vault authentication, JCS behavior, revocation validation order, CRL signatures, and protocol migration signatures.
 
 ## Operational Checklist
 
@@ -381,6 +451,8 @@ Before using a PCA Namespace:
 - Public identity keys distributed through trusted channels.
 - Optional DNS binding published.
 - Optional well-known revocation path prepared.
+- Optional CRL signing and verification drill completed.
+- Optional protocol migration verification drill completed.
 - Vault ciphertext backup strategy established.
 - Revocation drill tested with non-production data.
 
@@ -394,4 +466,3 @@ Before using a PCA Namespace:
 - Do not use Generation keys for public identity trust.
 - Do not assume Vault ciphertext can be regenerated.
 - Do not trust a successor Namespace automatically.
-

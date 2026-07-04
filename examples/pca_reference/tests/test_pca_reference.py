@@ -4,11 +4,13 @@ import unittest
 
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
+from pca_core.crl import is_identifier_revoked, sign_crl, verify_crl
 from pca_core.encoding import parse_upper_hex
 from pca_core.errors import PCAAuthenticationError, PCAValidationError
 from pca_core.generation import derive_bip32_master_seed
 from pca_core.hkdf import derive_descendant_key, derive_path_key
 from pca_core.jcs import canonicalize, loads_no_duplicates
+from pca_core.migration import sign_protocol_migration_statement, verify_protocol_migration_statement
 from pca_core.revocation import (
     generate_emergency_private_key,
     raw_public_key_b64,
@@ -16,11 +18,11 @@ from pca_core.revocation import (
     verify_revocation_statement,
 )
 from pca_core.vault import decrypt_file_bytes, encrypt_file_bytes
-from pca_core.xchacha20poly1305 import hchacha20
 
 
 MASTER = bytes(range(64))
 NAMESPACE = "PCA-v1/A980E2656D5D0349012434FF624506C9650187D1F4B897D20D0E0918B1E1186E"
+REVOKED_ID = "A" * 64
 
 
 class PCAReferenceTests(unittest.TestCase):
@@ -57,12 +59,6 @@ class PCAReferenceTests(unittest.TestCase):
     def test_bip32_seed_is_exactly_64_bytes(self) -> None:
         seed = derive_bip32_master_seed(MASTER, NAMESPACE, "Mainnet")
         self.assertEqual(len(seed), 64)
-
-    def test_hchacha20_known_vector(self) -> None:
-        key = bytes.fromhex("000102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F")
-        nonce = bytes.fromhex("000000090000004A0000000031415927")
-        expected = bytes.fromhex("82413B4227B27BFED30E42508A877D73A0F9E4D58A74A853C12EC41326D3ECDC")
-        self.assertEqual(hchacha20(key, nonce), expected)
 
     def test_vault_roundtrip_and_aad_authentication(self) -> None:
         plaintext = b"external secret that cannot be regenerated"
@@ -104,6 +100,44 @@ class PCAReferenceTests(unittest.TestCase):
         statement["reason"] = "Protocol Migration"
         with self.assertRaises(PCAAuthenticationError):
             verify_revocation_statement(statement, NAMESPACE, raw_public_key_b64(emergency_key))
+
+    def test_revocation_rejects_missing_required_fields(self) -> None:
+        emergency_key = generate_emergency_private_key()
+        seed = emergency_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        statement = sign_revocation_statement(
+            seed,
+            NAMESPACE,
+            "2026-07-03T10:00:00Z",
+            "Master Secret Compromised",
+        )
+        del statement["revoked_at"]
+        with self.assertRaises(PCAValidationError):
+            verify_revocation_statement(statement, NAMESPACE, raw_public_key_b64(emergency_key))
+
+    def test_crl_is_jcs_signed_and_rejects_tampering(self) -> None:
+        pca_key = generate_emergency_private_key()
+        seed = pca_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        crl = sign_crl(seed, "2026-07-03T00:00:00Z", [REVOKED_ID])
+        public_key = raw_public_key_b64(pca_key)
+        payload = verify_crl(crl, public_key)
+        self.assertEqual(payload["signer_path"], "Identity/V1/PCA")
+        self.assertTrue(is_identifier_revoked(crl, public_key, REVOKED_ID))
+        crl["revoked_identifiers"] = []
+        with self.assertRaises(PCAAuthenticationError):
+            verify_crl(crl, public_key)
+
+    def test_protocol_migration_statement_is_infrastructure_signed(self) -> None:
+        pca_key = generate_emergency_private_key()
+        seed = pca_key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+        statement = sign_protocol_migration_statement(
+            seed,
+            "2026-07-04T00:00:00Z",
+            "PCA-v1.2",
+            "PCA-v1.3",
+            "Upgrade serialization rules",
+        )
+        payload = verify_protocol_migration_statement(statement, raw_public_key_b64(pca_key))
+        self.assertEqual(payload["statement_type"], "protocol_migration")
 
 
 if __name__ == "__main__":

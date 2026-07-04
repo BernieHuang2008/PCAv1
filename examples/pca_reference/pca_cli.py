@@ -11,6 +11,7 @@ from pathlib import Path
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
 
+from pca_core.crl import is_identifier_revoked, sign_crl, verify_crl
 from pca_core.encoding import (
     generate_master_secret,
     generate_namespace,
@@ -21,6 +22,7 @@ from pca_core.generation import derive_bip32_master_seed, derive_generation_secr
 from pca_core.hkdf import derive_descendant_key, derive_path_key, derive_trust_root
 from pca_core.identity import derive_identity_private_key, derive_identity_seed, public_key_bytes
 from pca_core.jcs import canonicalize, loads_no_duplicates
+from pca_core.migration import sign_protocol_migration_statement, verify_protocol_migration_statement
 from pca_core.revocation import (
     generate_emergency_private_key,
     raw_public_key_b64,
@@ -259,6 +261,50 @@ def cmd_verify_revocation(args: argparse.Namespace) -> None:
         )
 
 
+def _hex_lines(path: str) -> list[str]:
+    values: list[str] = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        value = line.strip()
+        if value:
+            parse_upper_hex(value, 32, "revoked identifier")
+            values.append(value)
+    return values
+
+
+def cmd_sign_crl(args: argparse.Namespace) -> None:
+    private_seed = parse_upper_hex(args.private_seed_hex, 32, "PCA infrastructure private seed")
+    crl = sign_crl(private_seed, args.issued_at, _hex_lines(args.revoked_identifiers))
+    print(canonicalize(crl), flush=True)
+
+
+def cmd_verify_crl(args: argparse.Namespace) -> None:
+    crl = loads_no_duplicates(Path(args.crl).read_text(encoding="utf-8"))
+    if args.identifier:
+        revoked = is_identifier_revoked(crl, args.public_key_b64, args.identifier)
+        print(json.dumps({"revoked": revoked}, indent=2, sort_keys=True), flush=True)
+        return
+    payload = verify_crl(crl, args.public_key_b64)
+    print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
+
+
+def cmd_sign_migration(args: argparse.Namespace) -> None:
+    private_seed = parse_upper_hex(args.private_seed_hex, 32, "PCA infrastructure private seed")
+    statement = sign_protocol_migration_statement(
+        private_seed,
+        args.issued_at,
+        args.from_protocol,
+        args.to_protocol,
+        args.migration_text,
+    )
+    print(canonicalize(statement), flush=True)
+
+
+def cmd_verify_migration(args: argparse.Namespace) -> None:
+    statement = loads_no_duplicates(Path(args.statement).read_text(encoding="utf-8"))
+    payload = verify_protocol_migration_statement(statement, args.public_key_b64)
+    print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
+
+
 def cmd_dns_binding(args: argparse.Namespace) -> None:
     try:
         public_key = base64.b64decode(args.public_key_b64, validate=True)
@@ -358,6 +404,31 @@ def build_parser() -> argparse.ArgumentParser:
     verify_revocation.add_argument("--namespace", required=True)
     verify_revocation.add_argument("--statement", required=True)
     verify_revocation.set_defaults(func=cmd_verify_revocation)
+
+    sign_crl_parser = sub.add_parser("sign-crl", help="sign a PCA CRL with Identity/V1/PCA")
+    sign_crl_parser.add_argument("--private-seed-hex", required=True)
+    sign_crl_parser.add_argument("--issued-at", required=True)
+    sign_crl_parser.add_argument("--revoked-identifiers", required=True)
+    sign_crl_parser.set_defaults(func=cmd_sign_crl)
+
+    verify_crl_parser = sub.add_parser("verify-crl", help="verify a PCA CRL with the trusted Identity/V1/PCA public key")
+    verify_crl_parser.add_argument("--public-key-b64", required=True)
+    verify_crl_parser.add_argument("--crl", required=True)
+    verify_crl_parser.add_argument("--identifier")
+    verify_crl_parser.set_defaults(func=cmd_verify_crl)
+
+    sign_migration = sub.add_parser("sign-migration", help="sign a protocol migration statement with Identity/V1/PCA")
+    sign_migration.add_argument("--private-seed-hex", required=True)
+    sign_migration.add_argument("--issued-at", required=True)
+    sign_migration.add_argument("--from-protocol", required=True)
+    sign_migration.add_argument("--to-protocol", required=True)
+    sign_migration.add_argument("--migration-text", required=True)
+    sign_migration.set_defaults(func=cmd_sign_migration)
+
+    verify_migration = sub.add_parser("verify-migration", help="verify a protocol migration statement")
+    verify_migration.add_argument("--public-key-b64", required=True)
+    verify_migration.add_argument("--statement", required=True)
+    verify_migration.set_defaults(func=cmd_verify_migration)
 
     dns_binding = sub.add_parser("dns-binding", help="create the DNS TXT binding for an Identity public key")
     dns_binding.add_argument("--domain", required=True)

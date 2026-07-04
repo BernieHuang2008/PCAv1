@@ -13,6 +13,9 @@ from .encoding import ensure_bytes_length, validate_iso8601_z, validate_namespac
 from .errors import PCAAuthenticationError, PCAValidationError
 from .jcs import canonicalize_bytes
 
+_REQUIRED_FIELDS = {"namespace", "reason", "revoked_at", "signature", "version"}
+_OPTIONAL_FIELDS = {"successor_namespace_hint"}
+
 
 @dataclass(frozen=True)
 class RevocationCheck:
@@ -73,6 +76,17 @@ def verify_revocation_statement(
     if statement_namespace != trusted_namespace:
         return RevocationCheck(revoked=False, ignored=True, reason="namespace mismatch")
     validate_namespace(statement_namespace)
+    fields = set(statement)
+    allowed_fields = _REQUIRED_FIELDS | _OPTIONAL_FIELDS
+    if fields - allowed_fields:
+        raise PCAValidationError("revocation statement contains unsupported fields")
+    if not _REQUIRED_FIELDS.issubset(fields):
+        raise PCAValidationError("revocation statement is missing required fields")
+    if statement.get("version") != 1:
+        raise PCAValidationError("revocation statement version must be 1")
+    validate_iso8601_z(statement.get("revoked_at"), "revoked_at")
+    if not isinstance(statement.get("reason"), str) or not statement["reason"]:
+        raise PCAValidationError("revocation statement reason must be a non-empty string")
     signature_b64 = statement.get("signature")
     if not isinstance(signature_b64, str):
         raise PCAValidationError("revocation statement signature is required")
@@ -99,4 +113,3 @@ def verify_revocation_statement(
         reason="namespace revoked",
         successor_namespace_hint=hint,
     )
-
