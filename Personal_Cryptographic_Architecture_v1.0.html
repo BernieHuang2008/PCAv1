@@ -1,0 +1,134 @@
+<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>PCA v1.0</title>
+<style>
+body{font-family:Consolas,monospace,Arial,sans-serif;max-width:1100px;margin:40px auto;line-height:1.7;padding:20px}
+h1,h2,h3{font-family:Arial,sans-serif}pre{background:#f5f5f5;padding:16px;border:1px solid #ccc;overflow:auto}
+code{font-family:Consolas,monospace}
+</style></head><body>
+<h1>Personal Cryptographic Architecture (PCA)</h1>
+<p><b>Version:</b> v1.0</p>
+<h2>设计理念</h2>
+<p>整个系统以一个永久离线的 Master 为唯一信任根，通过 KDF 构建可恢复的能力体系，通过 PKI 构建身份信任体系，并使用分级 Vault 保存所有无法派生的外部秘密。</p>
+<h2>总体密钥结构</h2>
+<pre>
+MasterSecret
+(Root Secret, 512-bit Random)
+
+│
+└── TrustRootKey
+    (HKDF-SHA-512, Info="PCA/Trust/v1")
+
+    ├── IdentityRootKey
+    │   (Ed25519 Private Key)
+    │
+    │   ├── Identity2026Key
+    │   │   (Ed25519 Private Key)
+    │   │
+    │   │   ├── EmailCaKey
+    │   │   │   (Ed25519 Private Key)
+    │   │   │
+    │   │   │   └── Email123Key
+    │   │   │       (Ed25519 Private Key, One-time)
+    │   │   │
+    │   │   ├── LaptopIdentityKey
+    │   │   │   (Ed25519 Private Key)
+    │   │   │
+    │   │   ├── PhoneIdentityKey
+    │   │   │   (Ed25519 Private Key)
+    │   │   │
+    │   │   ├── DocumentSigningKey
+    │   │   │   (Ed25519 Private Key)
+    │   │   │
+    │   │   └── CodeSigningKey
+    │   │       (Ed25519 Private Key)
+    │   │
+    │   ├── Identity2027Key
+    │   │   (Ed25519 Private Key)
+    │   │
+    │   └── ...
+    │
+    └── EncryptRootKey
+        (HKDF-SHA-512, Info="PCA/Encrypt/v1")
+
+        ├── GenerationRootKey
+        │   (HKDF-SHA-512)
+        │   │
+        │   ├── BitcoinEntropyKey
+        │   │   (HKDF-SHA-512 → 256-bit Entropy → BIP39)
+        │   │
+        │   ├── PasswordManagerRootKey
+        │   │   (HKDF-SHA-512, 256-bit)
+        │   │
+        │   ├── FileEncryptionRootKey
+        │   │   (HKDF-SHA-512, 256-bit)
+        │   │
+        │   ├── DatabaseRootKey
+        │   │   (HKDF-SHA-512, 256-bit)
+        │   │
+        │   └── ...
+        │
+        └── VaultRootKey
+            (HKDF-SHA-512)
+
+            ├── AlphaVaultKey
+            │   (XChaCha20-Poly1305 KEK)
+            │
+            ├── BravoVaultKey
+            │   (XChaCha20-Poly1305 KEK)
+            │
+            └── CharlieVaultKey
+                (XChaCha20-Poly1305 KEK)</pre>
+<h2>Identity Branch</h2>
+<ul>
+<li>Identity Root 长期离线，仅用于签发年度身份。</li>
+<li>年度 Identity 用于签发各种用途身份（Email、Laptop、Phone 等）。</li>
+<li>邮件采用一次性身份（One-time Identity），默认不公开完整证书链，仅在需要时选择性披露。</li>
+<li>推荐算法：Ed25519（签名）；未来可升级到后量子算法。</li>
+</ul>
+<h2>Encrypt Branch</h2>
+<h3>Generation</h3>
+<ul>
+<li>所有可确定性恢复的秘密均由 HKDF 派生。</li>
+<li>包括钱包熵、密码管理器主密钥、文件加密主密钥等。</li>
+</ul>
+<h3>Vault</h3>
+<pre>
+Vault
+│
+├── Alpha
+│   ├── TOTP
+│   ├── OAuth Token
+│   ├── API Key
+│   └── Cookie
+│
+├── Bravo
+│   ├── Recovery Code
+│   ├── Software License
+│   ├── WireGuard
+│   └── SSH Backup
+│
+└── Charlie
+    ├── Cryptocurrency Seed
+    ├── Master Recovery Material
+    ├── Root PGP Key
+    └── Digital Legacy
+</pre>
+<h2>推荐算法</h2>
+<table border="1" cellpadding="6" cellspacing="0">
+<tr><th>对象</th><th>推荐</th></tr>
+<tr><td>Master</td><td>256-bit 随机种子</td></tr>
+<tr><td>KDF</td><td>HKDF-SHA-512</td></tr>
+<tr><td>Identity 签名</td><td>Ed25519</td></tr>
+<tr><td>Vault 加密</td><td>XChaCha20-Poly1305（推荐）</td></tr>
+<tr><td>文件加密</td><td>XChaCha20-Poly1305 或 AES-256-GCM</td></tr>
+<tr><td>Bitcoin</td><td>BIP39 + BIP32</td></tr>
+</table>
+<h2>核心原则</h2>
+<ol>
+<li>唯一根密钥。</li>
+<li>最小长期密钥。</li>
+<li>身份、派生、存储三者职责分离。</li>
+<li>风险分级（Alpha / Bravo / Charlie）。</li>
+<li>默认最小公开，支持选择性证明。</li>
+</ol>
+</body></html>
