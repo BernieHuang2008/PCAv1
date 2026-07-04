@@ -64,7 +64,7 @@ Pop-Location
 以下命令默认从仓库根目录运行：
 
 ```powershell
-cd C:\Bernie\DevG\git\BernieHuang2008\PCAv1
+cd PCAv1
 ```
 
 ## 初始化

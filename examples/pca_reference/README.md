@@ -59,7 +59,7 @@ python3 --version
 All commands below assume the repository root as the working directory.
 
 ```powershell
-cd C:\Bernie\DevG\git\BernieHuang2008\PCAv1
+cd PCAv1
 ```
 
 Install the declared standard crypto and canonicalization dependencies:
