@@ -45,6 +45,17 @@ Master Secret 是整个系统唯一需要永久保存且无法恢复的秘密。
 
 由 Master Secret 经 HKDF 派生得到的逻辑根密钥。
 
+```
+TrustRootKey = HKDF-SHA-512(
+  IKM  = Master Secret,
+  salt = Namespace ID,
+  info = "PCA/V1/TrustRoot",
+  L    = 64
+)
+```
+
+并且 `PCA/V1/TrustRoot` 是保留 Canonical Info Path，不得用于 Identity、Generation、Vault、CRL、migration 或应用自定义节点。
+
 Trust Root 不需要长期保存，可随时重新计算。
 
 ### Persona
