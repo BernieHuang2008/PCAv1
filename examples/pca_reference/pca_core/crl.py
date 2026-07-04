@@ -39,8 +39,17 @@ def sign_crl(private_seed: bytes, issued_at: str, revoked_identifiers: list[str]
     )
 
 
-def verify_crl(crl: dict[str, Any], trusted_pca_public_key_b64: str) -> dict[str, Any]:
-    payload = verify_infrastructure_statement(crl, trusted_pca_public_key_b64)
+def verify_crl(
+    crl: dict[str, Any],
+    trusted_pca_public_key_b64: str | None = None,
+    *,
+    hardcoded_identity_pca: str | None = None,
+) -> dict[str, Any]:
+    payload = verify_infrastructure_statement(
+        crl,
+        trusted_pca_public_key_b64,
+        hardcoded_identity_pca=hardcoded_identity_pca,
+    )
     if payload.get("version") != 1:
         raise PCAValidationError("CRL version must be 1")
     validate_iso8601_z(payload.get("issued_at"), "issued_at")
@@ -59,8 +68,14 @@ def verify_crl(crl: dict[str, Any], trusted_pca_public_key_b64: str) -> dict[str
     return payload
 
 
-def is_identifier_revoked(crl: dict[str, Any], trusted_pca_public_key_b64: str, identifier_hex: str) -> bool:
+def is_identifier_revoked(
+    crl: dict[str, Any],
+    trusted_pca_public_key_b64: str | None,
+    identifier_hex: str,
+    *,
+    hardcoded_identity_pca: str | None = None,
+) -> bool:
     if not isinstance(identifier_hex, str) or not _UPPER_HEX_RE.fullmatch(identifier_hex):
         raise PCAValidationError("identifier must be a SHA-256 Uppercase HEX string")
-    payload = verify_crl(crl, trusted_pca_public_key_b64)
+    payload = verify_crl(crl, trusted_pca_public_key_b64, hardcoded_identity_pca=hardcoded_identity_pca)
     return identifier_hex in payload["revoked_identifiers"]

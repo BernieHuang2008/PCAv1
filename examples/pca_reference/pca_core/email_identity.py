@@ -32,6 +32,8 @@ DELAYED_BINDING_TYPE = "openpgp_delayed_binding_certification"
 OPENPGP_GENERIC_CERTIFICATION = "0x10"
 OPENPGP_SUBKEY_BINDING = "0x18"
 OPENPGP_ALLOWED_SIGNATURE_TYPES = {OPENPGP_GENERIC_CERTIFICATION, OPENPGP_SUBKEY_BINDING}
+PCA_PARENT_KEY_ORIGIN = "pca_identity"
+EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN = "external_openpgp"
 
 
 def _decode_b64(value: str, expected: int, field: str) -> bytes:
@@ -90,11 +92,48 @@ def _parse_pgp_key(armored: str, field: str) -> PGPKey:
     return key
 
 
+def _parse_pgp_private_key(armored: str, field: str) -> PGPKey:
+    if not isinstance(armored, str) or "BEGIN PGP PRIVATE KEY BLOCK" not in armored:
+        raise PCAValidationError(f"{field} must be an ASCII-armored OpenPGP private key")
+    key, _ = PGPKey.from_blob(armored)
+    if key.is_public:
+        raise PCAValidationError(f"{field} must contain private key material")
+    return key
+
+
 def _parse_pgp_signature(armored: str) -> PGPSignature:
     if not isinstance(armored, str) or "BEGIN PGP SIGNATURE" not in armored:
         raise PCAValidationError("OpenPGP certification signature must be ASCII-armored")
     signature = PGPSignature.from_blob(armored)
     return signature
+
+
+def _pgp_fingerprint(key: PGPKey) -> str:
+    return str(key.fingerprint).replace(" ", "").upper()
+
+
+def _certify_subject_uid(
+    parent_pgp: PGPKey,
+    subject_pgp: PGPKey,
+    *,
+    passphrase: str | None = None,
+) -> PGPSignature:
+    if not subject_pgp.userids:
+        raise PCAValidationError("email OpenPGP public key must contain an ephemeral User ID")
+    if parent_pgp.is_protected:
+        if passphrase is None:
+            raise PCAValidationError("parent OpenPGP private key is protected; provide a passphrase")
+        with parent_pgp.unlock(passphrase):
+            return parent_pgp.certify(
+                subject_pgp.userids[0],
+                level=SignatureType.Generic_Cert,
+                hash=HashAlgorithm.SHA512,
+            )
+    return parent_pgp.certify(
+        subject_pgp.userids[0],
+        level=SignatureType.Generic_Cert,
+        hash=HashAlgorithm.SHA512,
+    )
 
 
 def validate_email_parent_path(parent_path: str) -> str:
@@ -218,6 +257,7 @@ def sign_openpgp_delayed_binding(
         "namespace": namespace,
         "openpgp_signature_type": signature_type,
         "openpgp_subject_public_key_armored": str(subject_pgp),
+        "parent_key_origin": PCA_PARENT_KEY_ORIGIN,
         "parent_path": parent_path,
         "parent_openpgp_public_key_armored": str(parent_pgp.pubkey),
         "parent_public_key_b64": base64.b64encode(parent_public).decode("ascii"),
@@ -234,13 +274,7 @@ def sign_openpgp_delayed_binding(
     if signer_user_id:
         payload["signer_user_id"] = signer_user_id
     if signature_type == OPENPGP_GENERIC_CERTIFICATION:
-        if not subject_pgp.userids:
-            raise PCAValidationError("email OpenPGP public key must contain an ephemeral User ID")
-        certification = parent_pgp.certify(
-            subject_pgp.userids[0],
-            level=SignatureType.Generic_Cert,
-            hash=HashAlgorithm.SHA512,
-        )
+        certification = _certify_subject_uid(parent_pgp, subject_pgp)
         payload["openpgp_certification_signature_armored"] = str(certification)
     else:
         subject_seed = derive_identity_seed(master_secret, namespace, payload["ephemeral_path"])
@@ -258,25 +292,72 @@ def sign_openpgp_delayed_binding(
     return signed
 
 
+def sign_external_openpgp_delayed_binding(
+    parent_private_key_armored: str,
+    namespace: str,
+    email_signature_statement: dict[str, Any],
+    issued_at: str,
+    *,
+    passphrase: str | None = None,
+    signer_user_id: str | None = None,
+) -> dict[str, Any]:
+    validate_namespace(namespace)
+    validate_iso8601_z(issued_at, "issued_at")
+    if email_signature_statement.get("namespace") != namespace:
+        raise PCAValidationError("email signature namespace must match binding namespace")
+    ephemeral_public = _decode_b64(
+        email_signature_statement.get("public_key_b64"), ED25519_SEED_BYTES, "email public key"
+    )
+    parent_pgp = _parse_pgp_private_key(parent_private_key_armored, "parent OpenPGP private key")
+    subject_pgp = _parse_pgp_key(
+        email_signature_statement.get("openpgp_public_key_armored"),
+        "email OpenPGP public key",
+    )
+    certification = _certify_subject_uid(parent_pgp, subject_pgp, passphrase=passphrase)
+    payload: dict[str, Any] = {
+        "distribution": "detached",
+        "ephemeral_path": validate_identity_path(email_signature_statement.get("signer_path")),
+        "issued_at": issued_at,
+        "key_flags": ["certify"],
+        "namespace": namespace,
+        "openpgp_certification_signature_armored": str(certification),
+        "openpgp_signature_type": OPENPGP_GENERIC_CERTIFICATION,
+        "openpgp_subject_public_key_armored": str(subject_pgp),
+        "parent_key_origin": EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN,
+        "parent_openpgp_fingerprint": _pgp_fingerprint(parent_pgp),
+        "parent_openpgp_public_key_armored": str(parent_pgp.pubkey),
+        "statement_type": DELAYED_BINDING_TYPE,
+        "subject_fingerprint_sha256_hex": _fingerprint_hex(ephemeral_public),
+        "subject_public_key_b64": base64.b64encode(ephemeral_public).decode("ascii"),
+        "subpackets": {
+            "2": "Signature Creation Time",
+            "27": "Key Flags",
+            "33": "Issuer Fingerprint",
+        },
+        "version": 1,
+    }
+    if signer_user_id:
+        payload["signer_user_id"] = signer_user_id
+    return payload
+
+
 def verify_openpgp_delayed_binding(
     email_signature_statement: dict[str, Any],
     binding_statement: dict[str, Any],
     *,
     trusted_parent_public_key_b64: str | None = None,
+    trusted_parent_openpgp_public_key_armored: str | None = None,
+    trusted_parent_openpgp_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(binding_statement, dict):
         raise PCAValidationError("binding statement must be a JSON object")
-    fields = set(binding_statement)
-    if "signature_b64" not in fields:
-        raise PCAValidationError("binding statement signature is required")
     payload = dict(binding_statement)
-    signature_b64 = payload.pop("signature_b64")
+    signature_b64 = payload.pop("signature_b64", None)
     if payload.get("version") != 1:
         raise PCAValidationError("binding version must be 1")
     if payload.get("statement_type") != DELAYED_BINDING_TYPE:
         raise PCAValidationError("binding statement_type is invalid")
     validate_namespace(payload.get("namespace"))
-    validate_email_parent_path(payload.get("parent_path"))
     validate_identity_path(payload.get("ephemeral_path"))
     validate_iso8601_z(payload.get("issued_at"), "issued_at")
     if payload.get("openpgp_signature_type") not in OPENPGP_ALLOWED_SIGNATURE_TYPES:
@@ -289,21 +370,46 @@ def verify_openpgp_delayed_binding(
     if "certify" not in payload.get("key_flags", []):
         raise PCAValidationError("binding key flags must include certify")
 
-    parent_public = _decode_b64(payload.get("parent_public_key_b64"), ED25519_SEED_BYTES, "parent public key")
     subject_public = _decode_b64(payload.get("subject_public_key_b64"), ED25519_SEED_BYTES, "subject public key")
-    if trusted_parent_public_key_b64 is not None:
-        trusted_parent = _decode_b64(trusted_parent_public_key_b64, ED25519_SEED_BYTES, "trusted parent public key")
-        if trusted_parent != parent_public:
-            raise PCAAuthenticationError("binding parent key does not match trusted parent key")
-    if payload.get("issuer_fingerprint_sha256_hex") != _fingerprint_hex(parent_public):
-        raise PCAAuthenticationError("binding issuer fingerprint mismatch")
     if payload.get("subject_fingerprint_sha256_hex") != _fingerprint_hex(subject_public):
         raise PCAAuthenticationError("binding subject fingerprint mismatch")
     if payload.get("subject_public_key_b64") != email_signature_statement.get("public_key_b64"):
         raise PCAAuthenticationError("binding subject does not match email signature public key")
     if payload.get("ephemeral_path") != email_signature_statement.get("signer_path"):
         raise PCAAuthenticationError("binding subject path does not match email signature path")
+    parent_key_origin = payload.get("parent_key_origin", PCA_PARENT_KEY_ORIGIN)
+    if parent_key_origin not in {PCA_PARENT_KEY_ORIGIN, EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN}:
+        raise PCAValidationError("binding parent_key_origin is invalid")
+    if parent_key_origin == EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN and payload.get("openpgp_signature_type") != OPENPGP_GENERIC_CERTIFICATION:
+        raise PCAValidationError("external OpenPGP delayed binding supports signature type 0x10")
+    if parent_key_origin == PCA_PARENT_KEY_ORIGIN:
+        validate_email_parent_path(payload.get("parent_path"))
+        if signature_b64 is None:
+            raise PCAValidationError("PCA binding statement signature is required")
+        parent_public = _decode_b64(payload.get("parent_public_key_b64"), ED25519_SEED_BYTES, "parent public key")
+        if trusted_parent_public_key_b64 is not None:
+            trusted_parent = _decode_b64(trusted_parent_public_key_b64, ED25519_SEED_BYTES, "trusted parent public key")
+            if trusted_parent != parent_public:
+                raise PCAAuthenticationError("binding parent key does not match trusted parent key")
+        if payload.get("issuer_fingerprint_sha256_hex") != _fingerprint_hex(parent_public):
+            raise PCAAuthenticationError("binding issuer fingerprint mismatch")
+    elif trusted_parent_public_key_b64 is not None:
+        raise PCAValidationError("trusted_parent_public_key_b64 applies only to PCA identity bindings")
     parent_pgp = _parse_pgp_key(payload.get("parent_openpgp_public_key_armored"), "parent OpenPGP public key")
+    if trusted_parent_openpgp_public_key_armored is not None:
+        trusted_parent_pgp = _parse_pgp_key(
+            trusted_parent_openpgp_public_key_armored,
+            "trusted parent OpenPGP public key",
+        )
+        if _pgp_fingerprint(trusted_parent_pgp) != _pgp_fingerprint(parent_pgp):
+            raise PCAAuthenticationError("binding parent OpenPGP key does not match trusted parent key")
+    if trusted_parent_openpgp_fingerprint is not None:
+        trusted_fingerprint = trusted_parent_openpgp_fingerprint.replace(" ", "").upper()
+        if trusted_fingerprint != _pgp_fingerprint(parent_pgp):
+            raise PCAAuthenticationError("binding parent OpenPGP fingerprint does not match trusted parent key")
+    if payload.get("parent_openpgp_fingerprint") is not None:
+        if payload.get("parent_openpgp_fingerprint") != _pgp_fingerprint(parent_pgp):
+            raise PCAAuthenticationError("binding parent OpenPGP fingerprint mismatch")
     subject_pgp = _parse_pgp_key(
         payload.get("openpgp_subject_public_key_armored"),
         "subject OpenPGP public key",
@@ -332,9 +438,10 @@ def verify_openpgp_delayed_binding(
         if not found_subkey_binding:
             raise PCAAuthenticationError("OpenPGP subkey binding signature is missing")
 
-    signature = _decode_b64(signature_b64, ED25519_SIGNATURE_BYTES, "binding signature")
-    try:
-        ed25519.Ed25519PublicKey.from_public_bytes(parent_public).verify(signature, canonicalize_bytes(payload))
-    except InvalidSignature as exc:
-        raise PCAAuthenticationError("binding signature is invalid") from exc
+    if parent_key_origin == PCA_PARENT_KEY_ORIGIN:
+        signature = _decode_b64(signature_b64, ED25519_SIGNATURE_BYTES, "binding signature")
+        try:
+            ed25519.Ed25519PublicKey.from_public_bytes(parent_public).verify(signature, canonicalize_bytes(payload))
+        except InvalidSignature as exc:
+            raise PCAAuthenticationError("binding signature is invalid") from exc
     return binding_statement

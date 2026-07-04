@@ -12,6 +12,8 @@ from .errors import PCAAuthenticationError, PCAValidationError
 from .jcs import canonicalize_bytes
 
 PCA_INFRASTRUCTURE_PATH = "Identity/V1/PCA"
+EXAMPLE_IDENTITY_PCA = "EXAMPLE"
+HARDCODED_IDENTITY_PCA: str | None = EXAMPLE_IDENTITY_PCA
 _INFRA_SIGNATURE_FIELD = "signature"
 
 
@@ -29,6 +31,27 @@ def public_key_from_b64(public_key_b64: str) -> ed25519.Ed25519PublicKey:
     return ed25519.Ed25519PublicKey.from_public_bytes(
         _decode_b64(public_key_b64, ED25519_SEED_BYTES, "Ed25519 public key")
     )
+
+
+def set_hardcoded_identity_pca(public_key_b64: str | None) -> None:
+    if public_key_b64 is not None and public_key_b64 != EXAMPLE_IDENTITY_PCA:
+        public_key_from_b64(public_key_b64)
+    global HARDCODED_IDENTITY_PCA
+    HARDCODED_IDENTITY_PCA = public_key_b64
+
+
+def _resolve_identity_pca_public_key(
+    trusted_pca_public_key_b64: str | None,
+    hardcoded_identity_pca: str | None,
+) -> ed25519.Ed25519PublicKey | None:
+    configured_key = hardcoded_identity_pca if hardcoded_identity_pca is not None else HARDCODED_IDENTITY_PCA
+    if configured_key == EXAMPLE_IDENTITY_PCA:
+        if trusted_pca_public_key_b64 is None:
+            return None
+        return public_key_from_b64(trusted_pca_public_key_b64)
+    if configured_key is None:
+        raise PCAValidationError("HARDCODED_IDENTITY_PCA must be set to an Identity/V1/PCA public key or EXAMPLE")
+    return public_key_from_b64(configured_key)
 
 
 def signature_from_b64(signature_b64: str) -> bytes:
@@ -61,8 +84,9 @@ def sign_infrastructure_statement(private_seed: bytes, payload: dict[str, Any]) 
 
 def verify_infrastructure_statement(
     statement: dict[str, Any],
-    trusted_pca_public_key_b64: str,
+    trusted_pca_public_key_b64: str | None = None,
     *,
+    hardcoded_identity_pca: str | None = None,
     required_statement_type: str | None = None,
 ) -> dict[str, Any]:
     if not isinstance(statement, dict):
@@ -75,7 +99,9 @@ def verify_infrastructure_statement(
         raise PCAValidationError("infrastructure statement signature is required")
     payload = dict(statement)
     del payload[_INFRA_SIGNATURE_FIELD]
-    public_key = public_key_from_b64(trusted_pca_public_key_b64)
+    public_key = _resolve_identity_pca_public_key(trusted_pca_public_key_b64, hardcoded_identity_pca)
+    if public_key is None:
+        return payload
     try:
         public_key.verify(signature_from_b64(signature_b64), canonicalize_bytes(payload))
     except InvalidSignature as exc:

@@ -251,25 +251,39 @@ Sign one email with a fresh ephemeral identity:
 python3 examples\pca_reference\pca_cli.py email-sign --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --input message.eml --signature message.email-sig.json
 ```
 
+If the Email ID must be prepared and sent with the message separately, generate it first and pass it back during signing:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-id --output message.email-id.txt
+python3 examples\pca_reference\pca_cli.py email-sign --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --random-email-id <RANDOM_EMAIL_ID> --input message.eml --signature message.email-sig.json
+```
+
 Verify the email signature:
 
 ```powershell
 python3 examples\pca_reference\pca_cli.py email-verify --input message.eml --signature message.email-sig.json
 ```
 
-Create a detached delayed-binding proof:
+Create a detached delayed-binding proof with a PCA-derived parent identity:
 
 ```powershell
 python3 examples\pca_reference\pca_cli.py email-bind --master-hex <MASTER_HEX> --namespace <NAMESPACE> --parent-path Identity/V1/Personal/Identity2026 --email-signature message.email-sig.json --issued-at 2026-07-04T00:00:00Z --binding message.binding.asc.json
+```
+
+Create a detached delayed-binding proof with an external OpenPGP parent key, such as Charlie's key:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py email-bind --parent-key-origin external_openpgp --namespace <NAMESPACE> --parent-pgp-private-key charlie.private.asc --email-signature message.email-sig.json --issued-at 2026-07-04T00:00:00Z --signer-user-id "Charlie <charlie@example.com>" --binding message.charlie-binding.asc.json
 ```
 
 Verify the delayed-binding proof:
 
 ```powershell
 python3 examples\pca_reference\pca_cli.py email-verify-binding --email-signature message.email-sig.json --binding message.binding.asc.json --trusted-parent-public-key-b64 <PARENT_PUBLIC_KEY_B64>
+python3 examples\pca_reference\pca_cli.py email-verify-binding --email-signature message.email-sig.json --binding message.charlie-binding.asc.json --trusted-parent-openpgp-public-key charlie.public.asc
 ```
 
-Email signing creates a new 256-bit `RandomEmailId` by default and signs the message with `Identity/V1/<Persona>/<IdentityNode>/Email/Ephemeral/<RandomEmailId>`. Delayed binding is distributed as a detached proof. It includes OpenPGP public key armor and either a `0x10` generic certification signature or, when requested with `--signature-type 0x18`, a bound-subkey OpenPGP public key block.
+Email signing creates a new 256-bit `RandomEmailId` by default and signs the message with `Identity/V1/<Persona>/<IdentityNode>/Email/Ephemeral/<RandomEmailId>`. Delayed binding is distributed as a detached proof. PCA-derived parent bindings include OpenPGP public key armor and either a `0x10` generic certification signature or, when requested with `--signature-type 0x18`, a bound-subkey OpenPGP public key block. External OpenPGP parent bindings use `0x10` generic certification and are verified against the parent OpenPGP public key or fingerprint established out of band.
 
 ## Vault Operations
 

@@ -13,7 +13,12 @@ from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat
 
 from pca_core.crl import is_identifier_revoked, sign_crl, verify_crl
 from pca_core.email_identity import (
+    EMAIL_ID_BYTES,
+    OPENPGP_GENERIC_CERTIFICATION,
+    EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN,
+    PCA_PARENT_KEY_ORIGIN,
     sign_ephemeral_email,
+    sign_external_openpgp_delayed_binding,
     sign_openpgp_delayed_binding,
     verify_ephemeral_email,
     verify_openpgp_delayed_binding,
@@ -22,6 +27,7 @@ from pca_core.encoding import (
     generate_master_secret,
     generate_namespace,
     parse_upper_hex,
+    random_upper_hex,
     to_upper_hex,
 )
 from pca_core.generation import derive_bip32_master_seed, derive_generation_secret
@@ -96,21 +102,53 @@ def add_source_args(parser: argparse.ArgumentParser) -> None:
 
 def add_revocation_guard_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--revocation-statement", help="verified revocation JSON to enforce before operation")
-    parser.add_argument("--emergency-public-key-b64", help="trusted emergency revocation public key")
+    parser.add_argument(
+        "--hardcoded-namespace",
+        help="hardcoded PCA Namespace, or EXAMPLE to use the operation namespace for tests",
+    )
+    parser.add_argument(
+        "--emergency-public-key-b64",
+        help="test-mode emergency revocation public key, used only when the hardcoded key is EXAMPLE",
+    )
+    parser.add_argument(
+        "--hardcoded-emergency-revocation-public-key",
+        help="hardcoded emergency revocation public key, or EXAMPLE to use test-mode behavior",
+    )
+
+
+def add_identity_pca_trust_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--public-key-b64",
+        help="test-mode Identity/V1/PCA public key, used only when the hardcoded key is EXAMPLE",
+    )
+    parser.add_argument(
+        "--hardcoded-identity-pca",
+        help="hardcoded Identity/V1/PCA public key, or EXAMPLE to skip signature verification for tests",
+    )
+
+
+def identity_pca_trust_args(args: argparse.Namespace) -> tuple[str | None, str | None]:
+    return args.public_key_b64, args.hardcoded_identity_pca
 
 
 def enforce_revocation_guard(args: argparse.Namespace, namespace: str | None = None) -> None:
     statement_path = getattr(args, "revocation_statement", None)
+    hardcoded_namespace = getattr(args, "hardcoded_namespace", None)
     emergency_public_key = getattr(args, "emergency_public_key_b64", None)
-    if not statement_path and not emergency_public_key:
+    hardcoded_emergency_key = getattr(args, "hardcoded_emergency_revocation_public_key", None)
+    if not statement_path and not emergency_public_key and not hardcoded_emergency_key:
         return
-    if not statement_path or not emergency_public_key:
-        raise PCAValidationError("provide both --revocation-statement and --emergency-public-key-b64")
+    if not statement_path:
+        raise PCAValidationError("provide --revocation-statement with emergency revocation trust arguments")
     trusted_namespace = namespace or getattr(args, "namespace", None)
-    if not trusted_namespace:
-        raise PCAValidationError("namespace is required to enforce a revocation statement")
     statement = loads_no_duplicates(Path(statement_path).read_text(encoding="utf-8"))
-    require_namespace_not_revoked(statement, trusted_namespace, emergency_public_key)
+    require_namespace_not_revoked(
+        statement,
+        trusted_namespace,
+        emergency_public_key,
+        hardcoded_namespace=hardcoded_namespace,
+        hardcoded_emergency_revocation_public_key=hardcoded_emergency_key,
+    )
 
 
 def note(message: str) -> None:
@@ -287,7 +325,13 @@ def cmd_sign_revocation(args: argparse.Namespace) -> None:
 
 def cmd_verify_revocation(args: argparse.Namespace) -> None:
     statement = loads_no_duplicates(Path(args.statement).read_text(encoding="utf-8"))
-    check = verify_revocation_statement(statement, args.namespace, args.public_key_b64)
+    check = verify_revocation_statement(
+        statement,
+        args.namespace,
+        args.public_key_b64,
+        hardcoded_namespace=args.hardcoded_namespace,
+        hardcoded_emergency_revocation_public_key=args.hardcoded_emergency_revocation_public_key,
+    )
     print(json.dumps(check.__dict__, indent=2, sort_keys=True), flush=True)
     if check.revoked:
         note(
@@ -304,12 +348,24 @@ def cmd_email_sign(args: argparse.Namespace) -> None:
         args.namespace,
         args.parent_path,
         message,
+        random_email_id=args.random_email_id,
     )
     output = canonicalize(statement)
     if args.signature:
         Path(args.signature).write_text(output, encoding="utf-8")
     print(output, flush=True)
-    note("this email used a fresh RandomEmailId and a one-message Ed25519 identity.")
+    if args.random_email_id:
+        note("this email used the supplied RandomEmailId and a one-message Ed25519 identity.")
+    else:
+        note("this email used a fresh RandomEmailId and a one-message Ed25519 identity.")
+
+
+def cmd_email_id(args: argparse.Namespace) -> None:
+    email_id = random_upper_hex(EMAIL_ID_BYTES)
+    if args.output:
+        Path(args.output).write_text(f"{email_id}\n", encoding="utf-8")
+    print(email_id, flush=True)
+    note("pass this value to email-sign --random-email-id when the Email ID must be prepared separately.")
 
 
 def cmd_email_verify(args: argparse.Namespace) -> None:
@@ -323,15 +379,31 @@ def cmd_email_verify(args: argparse.Namespace) -> None:
 def cmd_email_bind(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     signature_statement = loads_no_duplicates(Path(args.email_signature).read_text(encoding="utf-8"))
-    binding = sign_openpgp_delayed_binding(
-        _master(args.master_hex),
-        args.namespace,
-        args.parent_path,
-        signature_statement,
-        args.issued_at,
-        signature_type=args.signature_type,
-        signer_user_id=args.signer_user_id,
-    )
+    if args.parent_key_origin == PCA_PARENT_KEY_ORIGIN:
+        if not args.master_hex or not args.parent_path:
+            raise PCAValidationError("PCA identity binding requires --master-hex and --parent-path")
+        binding = sign_openpgp_delayed_binding(
+            _master(args.master_hex),
+            args.namespace,
+            args.parent_path,
+            signature_statement,
+            args.issued_at,
+            signature_type=args.signature_type,
+            signer_user_id=args.signer_user_id,
+        )
+    else:
+        if not args.parent_pgp_private_key:
+            raise PCAValidationError("external OpenPGP binding requires --parent-pgp-private-key")
+        if args.signature_type != OPENPGP_GENERIC_CERTIFICATION:
+            raise PCAValidationError("external OpenPGP delayed binding supports --signature-type 0x10")
+        binding = sign_external_openpgp_delayed_binding(
+            Path(args.parent_pgp_private_key).read_text(encoding="utf-8"),
+            args.namespace,
+            signature_statement,
+            args.issued_at,
+            passphrase=args.parent_pgp_passphrase,
+            signer_user_id=args.signer_user_id,
+        )
     output = canonicalize(binding)
     if args.binding:
         Path(args.binding).write_text(output, encoding="utf-8")
@@ -347,6 +419,12 @@ def cmd_email_verify_binding(args: argparse.Namespace) -> None:
         signature_statement,
         binding_statement,
         trusted_parent_public_key_b64=args.trusted_parent_public_key_b64,
+        trusted_parent_openpgp_public_key_armored=(
+            Path(args.trusted_parent_openpgp_public_key).read_text(encoding="utf-8")
+            if args.trusted_parent_openpgp_public_key
+            else None
+        ),
+        trusted_parent_openpgp_fingerprint=args.trusted_parent_openpgp_fingerprint,
     )
     print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
 
@@ -371,11 +449,17 @@ def cmd_sign_crl(args: argparse.Namespace) -> None:
 def cmd_verify_crl(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     crl = loads_no_duplicates(Path(args.crl).read_text(encoding="utf-8"))
+    public_key_b64, hardcoded_identity_pca = identity_pca_trust_args(args)
     if args.identifier:
-        revoked = is_identifier_revoked(crl, args.public_key_b64, args.identifier)
+        revoked = is_identifier_revoked(
+            crl,
+            public_key_b64,
+            args.identifier,
+            hardcoded_identity_pca=hardcoded_identity_pca,
+        )
         print(json.dumps({"revoked": revoked}, indent=2, sort_keys=True), flush=True)
         return
-    payload = verify_crl(crl, args.public_key_b64)
+    payload = verify_crl(crl, public_key_b64, hardcoded_identity_pca=hardcoded_identity_pca)
     print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
 
 
@@ -395,7 +479,12 @@ def cmd_sign_migration(args: argparse.Namespace) -> None:
 def cmd_verify_migration(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
     statement = loads_no_duplicates(Path(args.statement).read_text(encoding="utf-8"))
-    payload = verify_protocol_migration_statement(statement, args.public_key_b64)
+    public_key_b64, hardcoded_identity_pca = identity_pca_trust_args(args)
+    payload = verify_protocol_migration_statement(
+        statement,
+        public_key_b64,
+        hardcoded_identity_pca=hardcoded_identity_pca,
+    )
     print(json.dumps(payload, indent=2, sort_keys=True), flush=True)
 
 
@@ -504,8 +593,22 @@ def build_parser() -> argparse.ArgumentParser:
     sign_revocation.set_defaults(func=cmd_sign_revocation)
 
     verify_revocation = sub.add_parser("verify-revocation", help="verify an emergency revocation statement")
-    verify_revocation.add_argument("--public-key-b64", required=True)
-    verify_revocation.add_argument("--namespace", required=True)
+    verify_revocation.add_argument(
+        "--public-key-b64",
+        help="test-mode emergency revocation public key, used only when the hardcoded key is EXAMPLE",
+    )
+    verify_revocation.add_argument(
+        "--hardcoded-emergency-revocation-public-key",
+        help="hardcoded emergency revocation public key, or EXAMPLE to use test-mode behavior",
+    )
+    verify_revocation.add_argument(
+        "--namespace",
+        help="test-mode PCA Namespace, used only when the hardcoded namespace is EXAMPLE",
+    )
+    verify_revocation.add_argument(
+        "--hardcoded-namespace",
+        help="hardcoded PCA Namespace, or EXAMPLE to use test-mode behavior",
+    )
     verify_revocation.add_argument("--statement", required=True)
     verify_revocation.set_defaults(func=cmd_verify_revocation)
 
@@ -515,8 +618,13 @@ def build_parser() -> argparse.ArgumentParser:
     email_sign.add_argument("--namespace", required=True)
     email_sign.add_argument("--parent-path", required=True)
     email_sign.add_argument("--input", required=True)
+    email_sign.add_argument("--random-email-id", help="pre-generated 256-bit Uppercase HEX RandomEmailId")
     email_sign.add_argument("--signature")
     email_sign.set_defaults(func=cmd_email_sign)
+
+    email_id = sub.add_parser("email-id", help="generate a one-time 256-bit RandomEmailId")
+    email_id.add_argument("--output")
+    email_id.set_defaults(func=cmd_email_id)
 
     email_verify = sub.add_parser("email-verify", help="verify an ephemeral email signature statement")
     add_revocation_guard_args(email_verify)
@@ -526,9 +634,16 @@ def build_parser() -> argparse.ArgumentParser:
 
     email_bind = sub.add_parser("email-bind", help="create a detached OpenPGP-style delayed binding proof")
     add_revocation_guard_args(email_bind)
-    email_bind.add_argument("--master-hex", required=True)
+    email_bind.add_argument(
+        "--parent-key-origin",
+        choices=[PCA_PARENT_KEY_ORIGIN, EXTERNAL_OPENPGP_PARENT_KEY_ORIGIN],
+        default=PCA_PARENT_KEY_ORIGIN,
+    )
+    email_bind.add_argument("--master-hex")
     email_bind.add_argument("--namespace", required=True)
-    email_bind.add_argument("--parent-path", required=True)
+    email_bind.add_argument("--parent-path")
+    email_bind.add_argument("--parent-pgp-private-key", help="ASCII-armored external OpenPGP private key")
+    email_bind.add_argument("--parent-pgp-passphrase", help="passphrase for protected external OpenPGP private key")
     email_bind.add_argument("--email-signature", required=True)
     email_bind.add_argument("--issued-at", required=True)
     email_bind.add_argument("--signature-type", choices=["0x10", "0x18"], default="0x10")
@@ -541,6 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
     email_verify_binding.add_argument("--email-signature", required=True)
     email_verify_binding.add_argument("--binding", required=True)
     email_verify_binding.add_argument("--trusted-parent-public-key-b64")
+    email_verify_binding.add_argument("--trusted-parent-openpgp-public-key")
+    email_verify_binding.add_argument("--trusted-parent-openpgp-fingerprint")
     email_verify_binding.set_defaults(func=cmd_email_verify_binding)
 
     sign_crl_parser = sub.add_parser("sign-crl", help="sign a PCA CRL with Identity/V1/PCA")
@@ -554,7 +671,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_crl_parser = sub.add_parser("verify-crl", help="verify a PCA CRL with the trusted Identity/V1/PCA public key")
     add_revocation_guard_args(verify_crl_parser)
     verify_crl_parser.add_argument("--namespace", required=True)
-    verify_crl_parser.add_argument("--public-key-b64", required=True)
+    add_identity_pca_trust_args(verify_crl_parser)
     verify_crl_parser.add_argument("--crl", required=True)
     verify_crl_parser.add_argument("--identifier")
     verify_crl_parser.set_defaults(func=cmd_verify_crl)
@@ -572,7 +689,7 @@ def build_parser() -> argparse.ArgumentParser:
     verify_migration = sub.add_parser("verify-migration", help="verify a protocol migration statement")
     add_revocation_guard_args(verify_migration)
     verify_migration.add_argument("--namespace", required=True)
-    verify_migration.add_argument("--public-key-b64", required=True)
+    add_identity_pca_trust_args(verify_migration)
     verify_migration.add_argument("--statement", required=True)
     verify_migration.set_defaults(func=cmd_verify_migration)
 

@@ -34,11 +34,15 @@ def sign_protocol_migration_statement(
 
 
 def verify_protocol_migration_statement(
-    statement: dict[str, Any], trusted_pca_public_key_b64: str
+    statement: dict[str, Any],
+    trusted_pca_public_key_b64: str | None = None,
+    *,
+    hardcoded_identity_pca: str | None = None,
 ) -> dict[str, Any]:
     payload = verify_infrastructure_statement(
         statement,
         trusted_pca_public_key_b64,
+        hardcoded_identity_pca=hardcoded_identity_pca,
         required_statement_type="protocol_migration",
     )
     if payload.get("version") != 1:
