@@ -23,7 +23,7 @@ from pca_core.email_identity import (
 )
 from pca_core.encoding import parse_upper_hex
 from pca_core.errors import PCAAuthenticationError, PCARevokedNamespaceError, PCAValidationError
-from pca_core.generation import derive_bip32_master_seed
+from pca_core.generation import PASSWORD_CHARSET_BUCKETS, derive_bip32_master_seed, generate_password
 from pca_core.hkdf import derive_descendant_key, derive_path_key
 from pca_core.infrastructure import EXAMPLE_IDENTITY_PCA, set_hardcoded_identity_pca
 from pca_core.jcs import canonicalize, loads_no_duplicates
@@ -90,6 +90,47 @@ class PCAReferenceTests(unittest.TestCase):
     def test_bip32_seed_is_exactly_64_bytes(self) -> None:
         seed = derive_bip32_master_seed(MASTER, NAMESPACE, "Mainnet")
         self.assertEqual(len(seed), 64)
+
+    def test_password_generation_is_deterministic_and_bucketed(self) -> None:
+        first = generate_password(MASTER, NAMESPACE, "Example.COM", "Alice", 1, "PRINTABLE-88", 20)
+        second = generate_password(MASTER, NAMESPACE, "example.com", "alice", 1, "PRINTABLE-88", 20)
+        self.assertEqual(first.password, second.password)
+        self.assertEqual(first.service, "example.com")
+        self.assertEqual(first.username, "alice")
+        self.assertEqual(len(first.password), 20)
+        for bucket in PASSWORD_CHARSET_BUCKETS["PRINTABLE-88"]:
+            self.assertTrue(any(char in bucket for char in first.password))
+
+    def test_password_generation_rejects_lengths_shorter_than_bucket_count(self) -> None:
+        with self.assertRaises(PCAValidationError):
+            generate_password(MASTER, NAMESPACE, "example.com", "alice", 1, "PRINTABLE-88", 3)
+
+    def test_cli_password_outputs_generation_metadata(self) -> None:
+        stdout = StringIO()
+        with redirect_stderr(StringIO()), redirect_stdout(stdout):
+            self.assertEqual(
+                cli_main(
+                    [
+                        "password",
+                        "--master-hex",
+                        MASTER.hex().upper(),
+                        "--namespace",
+                        NAMESPACE,
+                        "--service",
+                        "example.com",
+                        "--username",
+                        "Alice",
+                    ]
+                ),
+                0,
+            )
+        payload = loads_no_duplicates(stdout.getvalue())
+        self.assertEqual(payload["service"], "example.com")
+        self.assertEqual(payload["username"], "alice")
+        self.assertEqual(payload["pwdcharset"], "PRINTABLE-88")
+        self.assertEqual(payload["pwdlength"], 20)
+        self.assertEqual(len(payload["password"]), 20)
+        self.assertTrue(payload["info_path"].startswith("Encrypt/V1/Generation/PasswordRoot1/"))
 
     def test_vault_roundtrip_and_aad_authentication(self) -> None:
         plaintext = b"external secret that cannot be regenerated"
@@ -275,6 +316,17 @@ class PCAReferenceTests(unittest.TestCase):
                     NAMESPACE,
                     "--path",
                     "Encrypt/V1/Generation/PasswordManager",
+                ],
+                [
+                    "password",
+                    "--master-hex",
+                    MASTER.hex().upper(),
+                    "--namespace",
+                    NAMESPACE,
+                    "--service",
+                    "example.com",
+                    "--username",
+                    "alice",
                 ],
                 ["bip32-seed", "--master-hex", MASTER.hex().upper(), "--namespace", NAMESPACE],
                 [

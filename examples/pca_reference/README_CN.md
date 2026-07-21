@@ -26,6 +26,7 @@
 - 签名 JSON 在签名前通过 `rfc8785` 执行 RFC 8785 JCS 规范化。
 - Revocation 验证先检查 Namespace，再检查签名。
 - CRL 与协议迁移示例使用 JCS + Ed25519 基础设施签名，并将 `signer_path` 固定为 `Identity/V1/PCA`。
+- Patch 1 密码生成使用 `Encrypt/V1/Generation/PasswordRoot1`、显式 NFC 预规范化、RFC 8785 JCS、HKDF-Stream 字节流、拒绝采样、强制字符桶和确定性 Fisher-Yates 洗牌。
 
 `pca_core/constants.py` 中仍有一个参考实现选择：PCAv1.2 说明 `TrustRootKey` 由 Master Secret 通过 HKDF 派生，但草案尚未为这条边指定字面 info path。本实现固定为：
 
@@ -145,6 +146,24 @@ python3 examples\pca_reference\pca_cli.py bip32-seed --master-hex <MASTER_HEX> -
 
 Generation keys 不建立公开信任。
 
+### 密码生成
+
+生成默认账户密码：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py password --master-hex <MASTER_HEX> --namespace <NAMESPACE> --service example.com --username alice
+```
+
+默认参数为 `counter=1`、`pwdcharset=PRINTABLE-88`、`pwdlength=20`。
+
+如站点有特殊限制，可显式指定配置：
+
+```powershell
+python3 examples\pca_reference\pca_cli.py password --master-hex <MASTER_HEX> --namespace <NAMESPACE> --service example.com --username alice --counter 2 --pwdcharset BASE-62 --pwdlength 24
+```
+
+CLI 会输出生成的密码，以及规范化后的 service、username、counter、charset、length、账户 JSON 哈希和最终 Generation info path。使用前请确认这些字段；任一字段变化都会有意产生不同密码。
+
 ## Email
 
 使用全新临时邮件身份签署一封邮件：
@@ -259,7 +278,7 @@ python3 examples\pca_reference\pca_cli.py verify-migration --namespace <NAMESPAC
 - `pca_core/hkdf.py`：HKDF-SHA-512 与层级派生。
 - `pca_core/identity.py`：Ed25519 identity seed、公钥与签名 helper。
 - `pca_core/email_identity.py`：邮件临时身份、邮件签名验证、OpenPGP 延迟绑定证明。
-- `pca_core/generation.py`：Generation secret 和 64 字节 BIP32 seed。
+- `pca_core/generation.py`：Generation secret、64 字节 BIP32 seed，以及 Patch 1 密码生成算法。
 - `pca_core/xchacha20poly1305.py`：PyNaCl/libsodium XChaCha20-Poly1305 wrapper，不手写密码算法。
 - `pca_core/vault.py`：Vault 文件加密、AAD、nonce、metadata。
 - `pca_core/jcs.py`：RFC 8785 JCS。

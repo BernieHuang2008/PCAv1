@@ -67,6 +67,26 @@ def build_cli(action: str, payload: dict[str, object]) -> list[str]:
             "--network",
             str(payload.get("network", "Mainnet")),
         ]
+    if action == "password":
+        result = command + [
+            "password",
+            *source,
+            "--namespace",
+            namespace,
+            "--service",
+            str(payload.get("service", "")),
+            "--username",
+            str(payload.get("username", "")),
+            "--counter",
+            str(payload.get("counter", 1)),
+            "--pwdcharset",
+            str(payload.get("pwdcharset", "PRINTABLE-88")),
+            "--pwdlength",
+            str(payload.get("pwdlength", 20)),
+        ]
+        if payload.get("preserve_username_case"):
+            result.append("--preserve-username-case")
+        return result
     if action == "vault-permission":
         return command + [
             "vault-permission",

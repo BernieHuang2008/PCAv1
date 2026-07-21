@@ -27,6 +27,7 @@ The implementation follows these core PCA rules:
 - Signed JSON uses RFC 8785 JCS through the `rfc8785` package before signing.
 - Revocation verification checks Namespace first, then signature.
 - CRL and protocol migration examples use JCS + Ed25519 infrastructure signatures with `signer_path` fixed to `Identity/V1/PCA`.
+- Patch 1 password generation uses `Encrypt/V1/Generation/PasswordRoot1`, RFC 8785 JCS with explicit NFC pre-normalization, HKDF-Stream byte consumption, rejection sampling, mandatory character buckets, and deterministic Fisher-Yates shuffling.
 
 One explicit reference choice is made in `pca_core/constants.py`: PCAv1.2 states that `TrustRootKey` is derived from Master Secret through HKDF, but the draft does not assign a literal info path for that exact edge. This implementation fixes it as:
 
@@ -243,6 +244,24 @@ python3 examples\pca_reference\pca_cli.py bip32-seed --master-hex <MASTER_HEX> -
 
 Generation keys do not establish public trust. They are deterministic secrets.
 
+### Password Generation
+
+Generate a deterministic account password:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py password --master-hex <MASTER_HEX> --namespace <NAMESPACE> --service example.com --username alice
+```
+
+The default profile is `counter=1`, `pwdcharset=PRINTABLE-88`, and `pwdlength=20`.
+
+Use an explicit profile when a site has constraints:
+
+```powershell
+python3 examples\pca_reference\pca_cli.py password --master-hex <MASTER_HEX> --namespace <NAMESPACE> --service example.com --username alice --counter 2 --pwdcharset BASE-62 --pwdlength 24
+```
+
+The CLI prints the generated password together with the normalized service, normalized username, counter, charset, length, JCS JSON hash, and final generation info path. Confirm those fields before using the password; changing any field intentionally produces a different password.
+
 ## Email Operations
 
 Sign one email with a fresh ephemeral identity:
@@ -443,7 +462,7 @@ Creates one-message email identities, verifies email signatures, and produces de
 
 `pca_core/generation.py`
 
-Derives deterministic Generation secrets from `Encrypt/V1/Generation/...` paths. The BIP32 helper returns exactly 64 bytes.
+Derives deterministic Generation secrets from `Encrypt/V1/Generation/...` paths. The BIP32 helper returns exactly 64 bytes. The password helper implements Patch 1 account JSON normalization, HKDF-Stream, unbiased character selection, and bucketed deterministic shuffling.
 
 `pca_core/xchacha20poly1305.py`
 

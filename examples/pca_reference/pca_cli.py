@@ -32,7 +32,17 @@ from pca_core.encoding import (
     random_upper_hex,
     to_upper_hex,
 )
-from pca_core.generation import derive_bip32_master_seed, derive_generation_secret
+from pca_core.generation import (
+    PASSWORD_CHARSET_BUCKETS,
+    PASSWORD_DEFAULT_CHARSET,
+    PASSWORD_DEFAULT_COUNTER,
+    PASSWORD_DEFAULT_LENGTH,
+    PASSWORD_ROOT_PATH,
+    derive_bip32_master_seed,
+    derive_generation_secret,
+    generate_password,
+    generate_password_with_root_key,
+)
 from pca_core.hkdf import derive_descendant_key, derive_path_key, derive_trust_root
 from pca_core.identity import derive_identity_private_key, derive_identity_seed, public_key_bytes
 from pca_core.jcs import canonicalize, loads_no_duplicates
@@ -243,6 +253,54 @@ def cmd_bip32(args: argparse.Namespace) -> None:
     else:
         seed = _derive_node_key(args, path, 64)
     print(to_upper_hex(seed))
+
+
+def cmd_password(args: argparse.Namespace) -> None:
+    enforce_revocation_guard(args)
+    if getattr(args, "master_hex", None) and not _has_parent(args):
+        generated = generate_password(
+            _master(args.master_hex),
+            args.namespace,
+            args.service,
+            args.username,
+            args.counter,
+            args.pwdcharset,
+            args.pwdlength,
+            preserve_username_case=args.preserve_username_case,
+        )
+    else:
+        password_root_key = _derive_node_key(args, PASSWORD_ROOT_PATH, 32)
+        generated = generate_password_with_root_key(
+            password_root_key,
+            args.namespace,
+            args.service,
+            args.username,
+            args.counter,
+            args.pwdcharset,
+            args.pwdlength,
+            preserve_username_case=args.preserve_username_case,
+        )
+    print(
+        json.dumps(
+            {
+                "account_json_sha256_hex": generated.account_json_sha256_hex,
+                "counter": generated.counter,
+                "info_path": generated.info_path,
+                "password": generated.password,
+                "pwdcharset": generated.pwdcharset,
+                "pwdlength": generated.pwdlength,
+                "service": generated.service,
+                "username": generated.username,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        flush=True,
+    )
+    note(
+        "confirm service, username, counter, charset, and length before using the generated password; "
+        f"see {MANUAL_URL}#password-generation."
+    )
 
 
 def cmd_vault_encrypt(args: argparse.Namespace) -> None:
@@ -571,6 +629,18 @@ def build_parser() -> argparse.ArgumentParser:
     bip32.add_argument("--namespace", required=True)
     bip32.add_argument("--network", choices=["Mainnet", "Testnet"], default="Mainnet")
     bip32.set_defaults(func=cmd_bip32)
+
+    password = sub.add_parser("password", help="generate a deterministic account password")
+    add_source_args(password)
+    add_revocation_guard_args(password)
+    password.add_argument("--namespace", required=True)
+    password.add_argument("--service", required=True)
+    password.add_argument("--username", required=True)
+    password.add_argument("--counter", type=int, default=PASSWORD_DEFAULT_COUNTER)
+    password.add_argument("--pwdcharset", choices=list(PASSWORD_CHARSET_BUCKETS), default=PASSWORD_DEFAULT_CHARSET)
+    password.add_argument("--pwdlength", type=int, default=PASSWORD_DEFAULT_LENGTH)
+    password.add_argument("--preserve-username-case", action="store_true")
+    password.set_defaults(func=cmd_password)
 
     enc = sub.add_parser("vault-encrypt", help="encrypt a file using PCA Vault rules")
     add_source_args(enc)

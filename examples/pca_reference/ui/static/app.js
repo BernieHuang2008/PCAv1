@@ -85,7 +85,18 @@ const trunkNodes = [
     action: "derive-node",
     length: 64,
     trunk: true,
-    children: ["password-manager", "bitcoin-mainnet"]
+    children: ["password-root", "password-manager", "bitcoin-mainnet"]
+  },
+  {
+    id: "password-root",
+    label: "Password Root",
+    path: "Encrypt/V1/Generation/PasswordRoot1",
+    branch: "Encryption",
+    type: "PasswordRoot",
+    action: "derive-node",
+    length: 32,
+    trunk: true,
+    children: []
   },
   {
     id: "password-manager",
@@ -334,6 +345,10 @@ function renderForms() {
   }
   if (node.id === "generation-root" || node.type === "GenerationRoot") {
     forms.append(generationForm());
+    forms.append(passwordForm("password-root"));
+  }
+  if (node.id === "password-root" || node.type === "Password") {
+    forms.append(passwordForm(node.id === "password-root" ? node.id : "password-root"));
   }
   if (node.id === "vault-root" || node.type === "VaultRoot" || node.type === "VaultPermission") {
     forms.append(vaultForm(node));
@@ -396,6 +411,45 @@ function generationForm() {
       type: "GenerationKey",
       action: "generation",
       length: Number(length.value)
+    });
+  });
+  return form;
+}
+
+function passwordForm(parentId) {
+  const form = document.createElement("form");
+  form.className = "form-grid";
+  const service = input("example.com");
+  const username = input("alice");
+  const counter = input("1");
+  const charset = select(["PRINTABLE-88", "BASE-62", "BASE-32", "BASE-16", "BASE-10"]);
+  const length = input("20");
+  const preserve = select(["NormalizeCase", "PreserveCase"]);
+  const submit = button("Add Password");
+  form.append(
+    field("Service", service),
+    field("Username", username),
+    field("Counter", counter),
+    field("Charset", charset),
+    field("Length", length),
+    field("Username case", preserve),
+    submit
+  );
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await createDynamicNode({
+      parentId,
+      label: `${service.value} / ${username.value}`,
+      path: "Encrypt/V1/Generation/PasswordRoot1/Pending",
+      branch: "Encryption",
+      type: "Password",
+      action: "password",
+      service: service.value,
+      username: username.value,
+      counter: Number(counter.value),
+      pwdcharset: charset.value,
+      pwdlength: Number(length.value),
+      preserveUsernameCase: preserve.value === "PreserveCase"
     });
   });
   return form;
@@ -506,6 +560,10 @@ async function runNodeAction(node) {
   }
   node.generated = true;
   node.result = data;
+  if (node.action === "password" && data) {
+    node.path = data.info_path;
+    node.label = `${data.service} / ${data.username}`;
+  }
   if (node.type === "VaultFileKey" && data && data.file_id) {
     node.fileId = data.file_id;
     node.path = data.path;
@@ -520,6 +578,17 @@ function payloadFor(node) {
   if (node.action === "identity") return { ...base, path: node.path };
   if (node.action === "generation") return { ...base, path: node.path, length: node.length || 32 };
   if (node.action === "bip32-seed") return { ...base, network: "Mainnet" };
+  if (node.action === "password") {
+    return {
+      ...base,
+      service: node.service,
+      username: node.username,
+      counter: node.counter || 1,
+      pwdcharset: node.pwdcharset || "PRINTABLE-88",
+      pwdlength: node.pwdlength || 20,
+      preserve_username_case: Boolean(node.preserveUsernameCase)
+    };
+  }
   if (node.action === "vault-permission") return { ...base, permission_path: node.permissionPath };
   if (node.action === "vault-file-key") {
     return { ...base, permission_path: node.permissionPath, file_id: node.fileId || "" };
