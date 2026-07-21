@@ -1,0 +1,362 @@
+                  PCA Password Generation Extension
+                                 PCAv1.2-patch1
+
+Abstract
+
+   This document defines a deterministic password generation extension
+   for the Personal Cryptographic Architecture (PCA) version 1.2.  It
+   introduces a new branch under the Generation domain for deriving
+   site-specific passwords from the Master Secret without requiring
+   external password managers or synchronization.  It also specifies a
+   general HKDF‑Stream mechanism for consuming deterministic byte
+   streams in a block-wise fashion, and updates the JSON canonicalization
+   rules with Unicode normalization requirements.
+
+   This extension is fully compatible with PCA v1.2 and does not alter
+   existing derived paths or security semantics.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.  This document is not a standard
+   track specification; it is a companion extension to PCA v1.2.
+
+   Discussion and suggestions for improvement are requested.
+   Distribution of this draft is unlimited.
+
+Copyright Notice
+
+   Copyright (c) 2026 PCA Authors.  This document is subject to the
+   same license terms as the main PCA v1.2 specification.
+
+Table of Contents
+
+   1.  Introduction
+   2.  Terminology
+   3.  HKDF‑Stream Derivation
+   4.  Updates to JSON Canonicalization (Section 7.3)
+   5.  Password Generation (Section 11.4)
+      5.1.  Password Root
+      5.2.  Account Derivation Path
+      5.3.  Character Sets and Bucket Shuffling
+      5.4.  Shuffle and Output
+   6.  Security Considerations
+   7.  References
+   Appendix A.  Implementation Notes
+
+1.  Introduction
+
+   PCA v1.2 defines a deterministic key hierarchy but does not specify
+   how to generate human‑memorable passwords for online services.
+   This extension fills that gap by providing a fully deterministic,
+   reproducible password generator that derives passwords from the
+   Master Secret and a small set of account parameters.  It also
+   introduces a generic HKDF‑Stream primitive for applications that
+   need a continuous random byte stream (e.g., shuffling, rejection
+   sampling), and strengthens the JSON signing rules with Unicode
+   normalization.
+
+2.  Terminology
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT",
+   "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY", and "OPTIONAL" in this
+   document are to be interpreted as described in RFC 2119 and RFC 8174.
+
+   All normative references to PCA v1.2 refer to the base specification
+   [PCA‑v1.2].
+
+3.  HKDF‑Stream Derivation
+
+   [This section adds a new subsection 6.5 to the PCA v1.2 specification.]
+
+   Some deterministic algorithms require consuming an arbitrarily long
+   byte stream in a repeatable fashion.  This document defines
+   HKDF‑Stream, a lazy block‑wise generator based on HKDF‑Extract and
+   HKDF‑Expand.
+
+3.1.  Principles
+
+   o  Global sequentiality: All operations that consume random bytes
+      MUST read from this stream in strict order, byte‑by‑byte.
+   o  Byte granularity: Reads are at byte (8‑bit) granularity.
+      Implementations MUST NOT consume fractional bits or skip bits.
+      After reading bytes 0‑19, the next read MUST start at byte 20.
+   o  Lazy generation: Due to rejection sampling, the total consumption
+      is unbounded; implementations SHOULD NOT pre‑allocate a fixed
+      buffer.
+   o  Seamless streaming: The stream is logically infinite and
+      continuous; block boundaries are internal and MUST NOT be visible
+      to the caller.
+
+3.2.  HKDF‑Extract and HKDF‑Expand
+
+   The functions are defined as in RFC 5869:
+
+      HKDF‑Extract(salt, IKM) -> PRK
+      HKDF‑Expand(PRK, info, L) -> OKM
+
+3.3.  HKDF‑Stream(IKM, CanonicalInfoPath)
+
+   The stream is constructed as follows:
+
+   1.  Compute the PRK:
+
+          PRK = HKDF‑Extract(salt = <Namespace ID>,
+                             IKM  = ParentKey)
+
+       The ParentKey is the IKM parameter passed to HKDF‑Stream (e.g.,
+       a PasswordRootKey).  The salt MUST be the active PCA Namespace
+       string as defined in Section 5 of PCA v1.2.
+
+   2.  Generate blocks:
+
+          Stream_Block_i = HKDF‑Expand(
+              PRK  = PRK,
+              info = CanonicalInfoPath + "/Block" + i,
+              L    = 256
+          )
+
+       The info string is the exact Canonical Info Path supplied to
+       HKDF‑Stream (e.g., "Encrypt/V1/Generation/PasswordRoot1/<hash>"),
+       followed by "/Block" and the decimal block number i (starting
+       from 0, no leading zeros).  Each block is 256 bytes (SHA‑512
+       output length).
+
+   3.  The stream is the concatenation of Block_0, Block_1, ... in order.
+
+3.4.  State Maintenance
+
+   For each distinct generation process, the consumption position MUST
+   reset to the start of Block 0.  Implementations MUST maintain a state
+   consisting of the current block index and byte offset.  Blocks are
+   generated on demand; after exhausting the last byte of Block_i, the
+   next read automatically triggers Block_(i+1).
+
+4.  Updates to JSON Canonicalization (Section 7.3)
+
+   [This section revises Section 7.3 of PCA v1.2.]
+
+   In addition to the existing requirement to use RFC 8785 JCS, any JSON
+   string value that contains human‑readable text (e.g., user names,
+   domain display parts, certificate subject names) MUST be converted
+   to Unicode Normalization Form C (NFC) before being assigned to the
+   JSON object and prior to JCS serialization.
+
+   The processing order is:
+
+      原始输入 → NFC normalization → UTF‑8 encoding → set as JSON
+      value → JCS serialization.
+
+   Implementations MUST NOT rely on JSON libraries or JCS libraries to
+   perform implicit normalization (most do not).  Normalization MUST be
+   an explicit application‑level pre‑processing step.
+
+   For strings that consist solely of ASCII characters (U+0000‑U+007F),
+   NFC is idempotent and the step MAY be skipped for performance, but
+   the result MUST be identical.
+
+   Signature verification MUST use the exact same process to recompute
+   the byte stream.
+
+5.  Password Generation (Section 11.4)
+
+   This extension adds a new subsection 11.4 to the PCA v1.2 Generation
+   branch.  The derived passwords are deterministic, reproducible, and
+   MUST NOT be used for encryption or digital signatures.
+
+5.1.  Password Root
+
+   The logical root path for password generation is:
+
+      Encrypt/V1/Generation/PasswordRoot1
+
+   Future versions may use PasswordRoot2, PasswordRoot3, etc., if a
+   rotation is needed.
+
+   The PasswordRootKey (32 bytes) is derived from the parent node
+   "Encrypt/V1/Generation" as:
+
+      PasswordRootKey = HKDF‑SHA‑512(
+        IKM  = derived key at Encrypt/V1/Generation,
+        salt = Namespace ID,
+        info = "Encrypt/V1/Generation/PasswordRoot1",
+        L    = 32
+      )
+
+5.2.  Account Derivation Path
+
+   Each account is uniquely identified by a JSON object with the
+   following fields:
+
+      {
+          "service": <ServiceIdentifier>,
+          "username": <Username>,
+          "counter": <Counter>,
+          "pwdcharset": <Charset>,
+          "pwdlength": <Length>
+      }
+
+   Normative rules:
+
+   o  ServiceIdentifier: typically a domain name.  Unicode domains
+      MUST be encoded with IDNA 2008 (RFC 5891) to ASCII (Punycode)
+      before inclusion.  IPv6 addresses SHOULD be enclosed in brackets
+      as per RFC 3986 (e.g., "[::1]").  Port numbers are appended with
+      a colon (e.g., "example.com:8443").
+   o  Username: SHOULD be lowercased by default, but the user MAY opt
+      to preserve original case for case‑sensitive services.  Unicode
+      usernames MUST be normalized to NFC after case conversion.
+   o  Counter: a positive integer (starting at 1) used for password
+      rotation.  Incrementing the counter changes the generated password.
+   o  Charset: one of the predefined names (see Section 5.3).
+   o  Length: a positive integer.  MUST be at least the number of
+      buckets for the chosen charset, otherwise the derivation MUST be
+      rejected with an error.
+
+   Default values (if not specified): Charset = "PRINTABLE-88",
+   Length = 20, Counter = 1.
+
+   Derivation steps:
+
+   1.  Build the JSON object and serialize it with JCS (including NFC
+       normalization as per Section 4).  Compute SHA‑256 of the UTF‑8
+       bytes and encode as uppercase hexadecimal.  This yields <JSON Hash>.
+   2.  Derive a 64‑byte RawPasswordKey using:
+
+          RawPasswordKey = HKDF‑SHA‑512(
+              IKM  = PasswordRootKey,
+              salt = Namespace ID,
+              info = "Encrypt/V1/Generation/PasswordRoot1/<JSON Hash>",
+              L    = 64
+          )
+
+   3.  The HKDF‑Stream used for all randomness in the password
+       construction is initialized with:
+
+          IKM  = RawPasswordKey
+          path = "Encrypt/V1/Generation/PasswordRoot1/<JSON Hash>"
+
+5.3.  Character Sets and Bucket Shuffling
+
+5.3.1.  Predefined Character Sets
+
+   Implementations MUST support the following named charsets, with exact
+   spelling and order:
+
+      o  PRINTABLE‑88
+      o  BASE‑62
+      o  BASE‑32
+      o  BASE‑16
+      o  BASE‑10
+
+   The content and bucket division for each are defined in Table 1 below.
+   These definitions are frozen for this PCA version; new charsets may
+   be introduced in future versions with new names (e.g., "PRINTABLE‑88‑V2").
+
+5.3.2.  Bucket Division
+
+   Table 1: Character Buckets (ordered top‑to‑bottom)
+
+   +-----------------+-----------------+----------------------------------+
+   | CharsetName     | Bucket Name     | Bucket Characters                |
+   +-----------------+-----------------+----------------------------------+
+   | PRINTABLE‑88    | Uppercase       | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Lowercase       | abcdefghijklmnopqrstuvwxyz       |
+   |                 | Digits          | 0123456789                       |
+   |                 | Special         | !@#$%^&*()‑_=+[]{}|;:,.<>?       |
+   | BASE‑62         | Uppercase       | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Lowercase       | abcdefghijklmnopqrstuvwxyz       |
+   |                 | Digits          | 0123456789                       |
+   | BASE‑32         | Letters         | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Digits          | 234567                           |
+   | BASE‑16         | Hex Digits      | 0123456789ABCDEF                 |
+   | BASE‑10         | Digits          | 0123456789                       |
+   +-----------------+-----------------+----------------------------------+
+
+   Buckets are iterated in the order shown above (top to bottom).
+
+5.3.3.  Password Construction Algorithm
+
+   1.  Let B = number of buckets for the chosen charset.  If Length < B,
+       reject with an error.
+
+   2.  For each bucket in order, consume bytes from the HKDF‑Stream
+       (initialized in 5.2) and use rejection sampling (simple discard
+       method, threshold = floor(256 / m) * m where m is bucket length)
+       to obtain an unbiased index into that bucket.  Select the
+       corresponding character and append it to MandatoryChars array.
+       This ensures at least one character from every bucket.
+
+   3.  If Length > B, let N = Length - B.  Continue consuming bytes
+       from the stream, using rejection sampling on the full charset,
+       and append N additional characters to AllChars (starting with
+       MandatoryChars).
+
+   4.  Perform a Fisher‑Yates shuffle on AllChars using the continued
+       byte stream for randomness.  For i from len-1 down to 1, consume
+       a byte, apply rejection sampling modulo (i+1) to get j, and swap
+       elements i and j.
+
+   5.  Concatenate the shuffled array into the final password string.
+
+5.4.  Password Strength Notification
+
+   Implementations MAY compute and display an entropy estimate, but MUST
+   NOT automatically block output or increment the counter based on such
+   estimates without explicit user action.  After generation, the
+   implementation MUST clearly show the following to the user:
+
+      o  The human‑readable service name (e.g., example.com)
+      o  The human‑readable username
+      o  The counter value
+      o  The charset and length (may be omitted if default)
+
+6.  Security Considerations
+
+   The HKDF‑Stream mechanism uses the same cryptographic primitives as
+   the base PCA specification; its security relies on the same
+   assumptions.  Rejection sampling does not introduce bias because
+   discarded values are never used.
+
+   Password generation is deterministic; if the Master Secret or the
+   PasswordRootKey is compromised, all derived passwords are exposed.
+   The Master Secret remains the single point of trust.
+
+   Users should increment the counter when a password is suspected of
+   being compromised; this does not reveal old passwords but creates a
+   new one.
+
+   The Unicode normalization rule prevents signature mismatches across
+   platforms with different default normalization forms (e.g., macOS NFD
+   vs. Linux NFC).
+
+7.  References
+
+   [PCA‑v1.2]   Personal Cryptographic Architecture Version 1.2, RFC‑style
+                specification, 2026.
+
+   [RFC 2119]   Bradner, S., "Key words for use in RFCs to Indicate
+                Requirement Levels", BCP 14, RFC 2119, March 1997.
+
+   [RFC 5869]   Krawczyk, H. and P. Eronen, "HMAC‑based Extract‑and‑Expand
+                Key Derivation Function (HKDF)", RFC 5869, May 2010.
+
+   [RFC 8785]   Rundgren, A., "JSON Canonicalization Scheme (JCS)",
+                RFC 8785, June 2020.
+
+   [RFC 5891]   Klensin, J., "Internationalized Domain Names in
+                Applications (IDNA): Protocol", RFC 5891, August 2010.
+
+Appendix A.  Implementation Notes (Non‑Normative)
+
+   The byte stream is generated lazily; implementations may use an
+   internal buffer of a few blocks to amortise HKDF cost.
+
+   For rejection sampling, the simple discard method is required to
+   avoid bias; implementations must treat each byte as an unsigned
+   8‑bit integer (0‑255).  The threshold calculation must be performed
+   exactly as floor(256 / m) * m.
+
+   When displaying the generated password, the UI should indicate that
+   the password is deterministic and recoverable from the Master Secret;
+   it is not a random password generated per session.

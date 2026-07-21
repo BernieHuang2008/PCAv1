@@ -1,0 +1,1470 @@
+Personal Cryptographic Architecture (PCA) Version 1.2
+Request for Comments Style Specification
+
+Status of This Memo
+
+   This document specifies PCA version 1.2.  It is written in the
+   style of an RFC for implementers, auditors, and protocol reviewers.
+   It is not an IETF publication.
+
+   This specification is normative unless a section is explicitly
+   marked as non-normative.
+
+Abstract
+
+   Personal Cryptographic Architecture (PCA) is a deterministic
+   personal key architecture for managing public identities, generated
+   secrets, and protected external secrets from a single offline Master
+   Secret.  PCA does not define new cryptographic primitives.  It
+   defines a stable composition of existing primitives, canonical
+   derivation paths, separation between identity and encryption domains,
+   and revocation and migration rules.
+
+Table of Contents
+
+   1.  Conventions and Terminology
+   2.  Design Goals
+   3.  Architecture
+   4.  Master Secret and Trust Root
+   5.  Namespace
+   6.  HKDF and Canonical Paths
+   7.  Naming, Encoding, and Serialization
+   8.  Identity Branch
+   9.  Email Identity
+   10. Encrypt Branch
+   11. Generation Branch
+   12. Vault Branch
+   13. Lifecycle
+   14. Security Model
+   15. Recommended Algorithms
+   16. Protocol Migration
+   17. Emergency Revocation
+   18. Domain Binding and External Discovery
+   19. Future Extensions
+   Appendix A. Design Philosophy
+   Appendix B. PCA and BIP32
+   Appendix C. OpenPGP Delayed Binding
+
+1.  Conventions and Terminology
+
+1.1.  Normative Keywords
+
+   The key words "MUST", "MUST NOT", "REQUIRED", "SHALL",
+   "SHALL NOT", "SHOULD", "SHOULD NOT", "RECOMMENDED", "MAY",
+   and "OPTIONAL" in this document are to be interpreted as described
+   in BCP 14, RFC 2119 and RFC 8174, when, and only when, they appear
+   in all capitals, as shown here.
+
+   A PCA implementation that violates a MUST or MUST NOT requirement is
+   not compliant with PCA v1.2.
+
+1.2.  Terminology
+
+   Master Secret:
+      The only permanent root secret of a PCA system.  It is 512 bits
+      of CSPRNG output and cannot be recovered if lost.
+
+   Namespace:
+      The top-level isolation identifier for a PCA instance.  It is
+      used as the salt in every HKDF operation and binds emergency
+      revocation scope.
+
+   TrustRootKey:
+      The logical root key derived from the Master Secret by
+      HKDF-SHA-512 using the reserved info path "PCA/V1/TrustRoot".
+
+   Canonical Info Path:
+      The ASCII context string used as HKDF info.  Canonical Info Paths
+      are stable, case-sensitive, and cryptographically significant.
+
+   Persona:
+      A public identity namespace such as Personal, Work, Alice, or
+      Anonymous.  Different Personas are independent public identities.
+
+   Identity:
+      A branch or node used for public trust, authentication, and
+      digital signatures.
+
+   Generation:
+      A branch used to deterministically generate recoverable secrets.
+      Generation does not establish public trust.
+
+   Vault:
+      A branch used to protect external secrets and files.  Vault keys
+      are recoverable, but Vault ciphertext is not recoverable if lost.
+
+   Emergency Revocation Key:
+      An Ed25519 key pair generated independently of the Master Secret.
+      It is used only to declare a Namespace revoked after Master Secret
+      compromise or an equivalent disaster.
+
+   Infrastructure Identity:
+      The identity at path "Identity/V1/PCA".  Its public key and full
+      Canonical Info Path are hard-coded or equivalently preconfigured
+      as the trust anchor for PCA-internal verification.
+
+2.  Design Goals
+
+   PCA has the following goals:
+
+   *  Single Root of Trust: a PCA instance has one Master Secret.
+
+   *  Deterministic Recovery: derived keys can be recomputed from the
+      Master Secret, Namespace, and Canonical Info Paths.
+
+   *  Minimal Persistent Secrets: except for the Master Secret,
+      emergency revocation private key, and external Vault ciphertext,
+      protocol secrets need not be stored long term.
+
+   *  Separation of Responsibilities: Identity, Generation, and Vault
+      have non-overlapping duties.
+
+   *  Least Disclosure: identities are anonymous by default and are
+      linked only by explicit disclosure.
+
+   *  Capability Isolation: compromise of a child key MUST NOT enable
+      recovery of its parent key or sibling keys.
+
+   *  Long-Term Evolvability: protocol migration is supported without
+      confusing protocol upgrades with Namespace revocation.
+
+3.  Architecture
+
+3.1.  Key Tree Overview
+
+   PCA derives a tree from one Master Secret:
+
+      Master Secret (512-bit random)
+         |
+         v
+      TrustRootKey = HKDF-SHA-512(..., info="PCA/V1/TrustRoot")
+         |
+         +-- Identity branch
+         |      +-- Identity/V1/PCA
+         |      +-- Identity/V1/<Persona>/...
+         |
+         +-- Encrypt branch
+                +-- Encrypt/V1/Generation/...
+                +-- Encrypt/V1/Vault/...
+
+   The Identity branch is for public trust.  The Encrypt branch is for
+   secrets and file protection.  Keys from the Encrypt branch MUST NOT
+   be used to establish public identity.
+
+3.2.  Security Domains
+
+   PCA has three independent security domains:
+
+      Identity:
+         Establishes public identity and trust.  Uses Ed25519 in v1.2.
+
+      Generation:
+         Deterministically generates recoverable secrets.  It does not
+         publish trust anchors or certificates.
+
+      Vault:
+         Protects external secrets and files.  Vault ciphertext itself
+         is not recoverable from the Master Secret.
+
+   Implementations MUST keep these responsibilities separated.  Identity
+   MUST NOT be used as a secret-storage mechanism.  Generation MUST NOT
+   establish public trust.  Vault MUST NOT generate unrelated secrets.
+
+4.  Master Secret and Trust Root
+
+4.1.  Master Secret Generation
+
+   The Master Secret MUST be exactly 512 bits generated by a
+   cryptographically secure random number generator.
+
+   The Master Secret MUST be the only permanent root secret in the PCA
+   derivation hierarchy.
+
+4.2.  Master Secret Storage
+
+   The Master Secret MUST be stored offline.  It MUST NOT participate in
+   ordinary online business operations.  It MUST NOT be transmitted to,
+   stored by, or processed in a networked service as part of normal use.
+
+   Recommended storage media include durable offline media, an HSM,
+   geographically separated backups, or a bank safe deposit box.
+
+   If the Master Secret is disclosed, an attacker can recompute the PCA
+   key hierarchy.  The protection level for the Master Secret therefore
+   MUST be higher than for any derived key.
+
+4.3.  Emergency Revocation Key
+
+   At system initialization, implementations MUST generate an Ed25519
+   Emergency Revocation Key pair independently of the Master Secret.
+
+   The emergency private key MUST be generated with independent CSPRNG
+   output and MUST NOT be derived from the Master Secret or any PCA
+   derived key.
+
+   The emergency private key MUST be stored physically separately from
+   the Master Secret.
+
+   The emergency public key SHOULD be hard-coded in verifier software or
+   delivered in a trusted update/configuration package whose integrity
+   and origin are protected by code signing or an equivalent mechanism.
+
+4.4.  TrustRootKey
+
+   The TrustRootKey MUST be derived as follows:
+
+      TrustRootKey = HKDF-SHA-512(
+        IKM  = Master Secret,
+        salt = Namespace,
+        info = "PCA/V1/TrustRoot",
+        L    = 64
+      )
+
+   "PCA/V1/TrustRoot" is a reserved Canonical Info Path.  It MUST NOT
+   be used for Identity, Generation, Vault, CRL, migration, or
+   application-defined nodes.  It MUST remain stable for the lifetime of
+   the "PCA-v1/<NamespaceID>" namespace format family.
+
+   TrustRootKey need not be stored and MAY be recomputed when required.
+
+4.5.  Infrastructure Trust Anchor
+
+   In addition to the emergency public key, compliant verifier
+   implementations MUST hard-code or equivalently preconfigure the
+   public key and full Canonical Info Path for "Identity/V1/PCA".
+
+   This key is the trust anchor for PCA-internal verification, including
+   CRLs, software update signatures, protocol migration statements, and
+   other internal authorization decisions.
+
+5.  Namespace
+
+5.1.  Namespace Function
+
+   A Namespace is the highest-level isolation boundary for a PCA
+   instance.  It is used as the HKDF salt in all deterministic
+   derivations and defines the sole scope of emergency revocation.
+
+   Different Namespaces MUST be treated as completely independent.
+   Trust anchors, certificates, CRLs, revocation statements, and
+   compatibility states from one Namespace MUST NOT automatically apply
+   to any other Namespace.
+
+5.2.  Namespace Syntax
+
+   A PCA v1 Namespace has this form:
+
+      PCA-v1/<NamespaceID>
+
+   NamespaceID MUST be exactly 256 bits of CSPRNG output encoded as
+   64 uppercase hexadecimal characters.
+
+   Example:
+
+      PCA-v1/A980E2656D5D0349012434FF624506C9650187D1F4B897D20D0E0918B1E1186E
+
+   The "PCA-v1" prefix identifies the namespace format family.  It is
+   not, by itself, a protocol migration marker.
+
+5.3.  Namespace Lifetime
+
+   A PCA instance has exactly one active Namespace.  All HKDF operations
+   in that instance MUST use the same Namespace string as salt.
+
+   Ordinary protocol upgrades MUST NOT be interpreted as automatic
+   Namespace replacement.  A new Namespace is used only when a later
+   specification explicitly requires namespace isolation, or when the
+   system is rebuilt after Master Secret compromise or an equivalent
+   disaster.
+
+5.4.  Revocation Scope
+
+   Emergency revocation applies only to the value in the "namespace"
+   field of the revocation statement.
+
+   If a Namespace is validly revoked, it is permanently dead.  A rebuilt
+   system MUST use a new Master Secret and a new Namespace.  Old
+   emergency revocation keys, certificate chains, and revocation state
+   MUST NOT carry over to the new Namespace.
+
+6.  HKDF and Canonical Paths
+
+6.1.  HKDF Primitive
+
+   PCA v1.2 uses HKDF-SHA-512 for all deterministic derivation.
+   Implementations MUST use the same inputs for the same node:
+
+      IKM  = Parent Key
+      salt = Namespace
+      info = Canonical Info Path
+
+   For identical IKM, salt, info, and output length, implementations
+   MUST produce identical output bytes.
+
+6.2.  Canonical Info Path Syntax
+
+   Canonical Info Paths MUST be non-empty US-ASCII strings.  They MUST
+   contain only characters from this set:
+
+      A-Z a-z 0-9 / -
+
+   A path MUST NOT contain Unicode characters, spaces, control
+   characters, empty components, a leading slash, or a trailing slash.
+   Paths are case-sensitive.
+
+   Protocol paths have this structure:
+
+      Branch/Version/Object...
+
+   Branch in PCA v1.2 MUST be "Identity", "Encrypt", or reserved "PCA".
+   Version MUST be "V" followed by one or more decimal digits, such as
+   "V1".
+
+6.3.  Hierarchical Derivation
+
+   To derive a protocol path from the Master Secret, implementations
+   MUST:
+
+   1.  Derive TrustRootKey as specified in Section 4.4.
+
+   2.  Split the target protocol path into slash-separated components.
+
+   3.  Starting with the first three components, derive each prefix from
+       the current parent key using HKDF-SHA-512 with the full prefix as
+       the Canonical Info Path.
+
+   4.  Continue until the complete target path has been derived.
+
+   For example, deriving:
+
+      Identity/V1/Personal/Identity2026/Laptop
+
+   uses these info paths in order after TrustRootKey:
+
+      Identity/V1/Personal
+      Identity/V1/Personal/Identity2026
+      Identity/V1/Personal/Identity2026/Laptop
+
+   Descendant derivation from a known parent key MUST use the same rule
+   starting immediately below the supplied parent path.  A target path
+   MUST be equal to or below the supplied parent path; otherwise the
+   derivation MUST be rejected.
+
+6.4.  Output Lengths
+
+   Implementations MUST use the following output lengths:
+
+      Ed25519 private seed:
+         32 bytes.  Use the first 32 bytes of HKDF output as the seed.
+
+      XChaCha20-Poly1305 key:
+         32 bytes.  Use the first 32 bytes of HKDF output.
+
+      BIP32 master seed:
+         64 bytes.  Use the full 64-byte HKDF output directly.
+
+      SHA-256 fingerprint or hash:
+         32 bytes, standard SHA-256 output.
+
+   HKDF output for intermediate nodes SHOULD be 64 bytes.
+
+6.5.  HKDF-Stream Derivation for Deterministic Byte Streams
+
+   Some deterministic algorithms (e.g., bucket shuffling, Fisher-Yates
+   permutation) require consuming an arbitrarily long deterministic
+   byte stream in a sequential fashion.  This section defines a lazy
+   block-wise generation method based on HKDF-Extract and HKDF-Expand,
+   ensuring cross-platform and cross-device consistency.
+
+6.5.1.  Core Principles
+
+   Global Sequentiality:
+      All operations that consume random bytes MUST read from this
+      stream in strict order.  No operation may skip ahead or read out
+      of sequence.
+
+   Byte Granularity:
+      All reads are at byte (8-bit) granularity.  Implementations MUST
+      NOT consume fractional bits, cross byte boundaries, or start a
+      read in the middle of a byte.  For example, if Step 1 consumed
+      bytes 0 through 19, Step 2 MUST start at byte 20 regardless of
+      whether Step 1 used all bits of byte 19.
+
+   Lazy Generation:
+      Due to rejection sampling, the total number of bytes consumed is
+      theoretically unbounded.  Implementations SHOULD NOT pre-allocate
+      a fixed buffer for the entire stream.
+
+   Seamless Streaming:
+      The byte stream exposed to callers MUST be seamless.  Although
+      internally generated in blocks, block boundaries MUST NOT be
+      visible to the caller; the stream appears as a continuous,
+      infinite sequence of bytes.
+
+6.5.2.  HKDF-Extract and HKDF-Expand
+
+   The HKDF-Extract and HKDF-Expand functions are defined as in
+   RFC 5869:
+
+      HKDF-Extract(salt, IKM) -> PRK
+      HKDF-Expand(PRK, info, L) -> OKM
+
+   This section uses the same function signatures and semantics.
+
+6.5.3.  HKDF-Stream(IKM, CanonicalInfoPath)
+
+   The HKDF-Stream function produces an infinite byte stream derived
+   from the given IKM and Canonical Info Path.
+
+   First, compute the PRK using HKDF-Extract:
+
+      PRK = HKDF-Extract(
+         IKM  = ParentKey,
+         salt = <Namespace ID>
+      )
+
+   The ParentKey is the IKM parameter supplied to HKDF-Stream (e.g., a
+   PasswordRootKey).  The salt MUST be the active PCA Namespace string
+   as defined in Section 5 of this specification.
+
+   The byte stream consists of consecutive blocks, each independently
+   generated by HKDF-Expand:
+
+      Stream_Block_i = HKDF-Expand(
+         PRK  = PRK,
+         info = CanonicalInfoPath + "/Block" + i,
+         L    = 256
+      )
+
+   where:
+
+   o  CanonicalInfoPath is the exact Canonical Info Path supplied to
+      HKDF-Stream (e.g., "Encrypt/V1/Generation/PasswordRoot1/<hash>").
+
+   o  i is the block sequence number, starting from 0, encoded as a
+      decimal integer with no leading zeros.
+
+   o  L is fixed at 256 bytes (the output length of SHA-512, as
+      permitted by RFC 5869).
+
+   The stream is defined as the concatenation of Block_0, Block_1,
+   Block_2, ... in order.
+
+6.5.4.  Block Counter and State Maintenance
+
+   The block counter i starts at 0 and increments as needed.  When the
+   current block is exhausted, the next read automatically triggers
+   generation of Block_(i+1).
+
+   For each distinct generation process (e.g., each password derivation),
+   the consumption position MUST be reset to the start of Block 0 to
+   ensure reproducibility.
+
+   Implementations MUST maintain state consisting of:
+   o  the current block index, and
+   o  the current byte offset within that block.
+
+   Implementations MUST ensure that the byte immediately following the
+   last byte of Block_i is the first byte of Block_(i+1), with no
+   truncation, skipping, or duplication.
+
+7.  Naming, Encoding, and Serialization
+
+7.1.  Naming Rules
+
+   Named object components SHOULD use CamelCase.  Examples include:
+
+      PasswordManager
+      Vault
+      DocumentSigning
+      CodeSigning
+      EmailCa
+      LongTermIdentity
+
+   Components that are version labels, decimal counters, or encoded
+   random identifiers MAY use their specified syntax instead of
+   CamelCase.
+
+   The only hierarchy separator is "/".  Other separators MUST NOT be
+   used to represent path hierarchy.
+
+7.2.  Encodings
+
+   Namespace IDs, Email IDs, File IDs, hashes, and fingerprints MUST use
+   uppercase hexadecimal when encoded as hexadecimal strings.
+
+   External metadata strings SHOULD be UTF-8.  Strings that participate
+   in cryptographic computation MUST use their specified byte encoding.
+   Canonical Info Paths MUST be encoded exactly as US-ASCII bytes.
+
+7.3.  JSON Canonicalization
+
+   Any JSON data structure that is digitally signed in PCA, including
+   CRLs, revocation statements, protocol migration statements,
+   certificate metadata, and password generation configuration objects,
+   MUST be serialized using RFC 8785 JSON Canonicalization Scheme (JCS)
+   before signing.
+
+   In addition to the JCS formatting rules (no extra whitespace, no
+   line breaks, double-quoted keys and strings, keys sorted in ASCII
+   dictionary order, and strict RFC 8785 escaping), the following
+   Unicode normalization requirement applies:
+
+   Any JSON string value that contains human-readable text (e.g.,
+   usernames, domain display parts, certificate subject names, or other
+   textual metadata that is not purely machine-generated) MUST be
+   converted to Unicode Normalization Form C (NFC) before being assigned
+   to the JSON object and prior to JCS serialization.
+
+   The processing order MUST be:
+
+      Raw input -> NFC normalization -> UTF-8 encoding -> set as JSON
+      string value -> JCS serialization.
+
+   Implementations MUST NOT rely on JSON libraries or JCS libraries to
+   perform implicit normalization; most do not provide this function.
+   Normalization MUST be an explicit application-level preprocessing
+   step.
+
+   For strings that consist solely of ASCII characters (U+0000 to
+   U+007F), NFC normalization is idempotent and the step MAY be skipped
+   for performance, but the result MUST be identical to applying it.
+
+   Signature calculation MUST be performed over the exact UTF-8 byte
+   stream produced by JCS serialization after the above complete
+   process.  The "signature" field, when present, MUST be excluded from
+   the serialized object being signed.
+
+   Verifiers MUST use the identical process to recompute the byte stream
+   for signature verification.
+
+8.  Identity Branch
+
+8.1.  Purpose and Algorithm
+
+   The Identity branch establishes public trust.  PCA v1.2 identity
+   keys use Ed25519.  Identity private seeds MUST be the first 32 bytes
+   of the derived key material for the relevant Identity path.
+
+8.2.  IdentityRoot, Infrastructure Identity, and Persona
+
+   IdentityRoot is a logical offline root for signing the PCA
+   infrastructure identity and Personas.  Its private key MUST never be
+   publicly disclosed.  Its public key SHOULD NOT be published by
+   default, to avoid linking independent Personas.
+
+   "Identity/V1/PCA" is the PCA infrastructure identity.  Its public key
+   and path MUST be hard-coded or equivalently preconfigured in
+   compliant verifier software as the PCA-internal trust anchor.
+
+   "Identity/V1/PCA" MUST NOT be used as a personal, work, email, or
+   other externally public user identity.
+
+   A Persona is a logical public identity space.  Examples:
+
+      Identity/V1/Personal
+      Identity/V1/Work
+      Identity/V1/Anonymous
+
+   A Persona MAY issue child Identity nodes such as:
+
+      Identity/V1/Personal/Identity2026
+      Identity/V1/Personal/IdentityLongTerm
+
+   Different Personas SHOULD be treated as independent public
+   identities.
+
+8.3.  Device and Purpose Identities
+
+   Identity nodes MAY issue device or purpose identities, for example:
+
+      Identity/V1/Personal/Identity2026/Laptop
+      Identity/V1/Work/Identity2026/CodeSigning
+      Identity/V1/Personal/Identity2026/EmailCa
+
+8.4.  Certificate Chains
+
+   Child public keys MAY be signed by parent identity keys to form a
+   certificate chain.
+
+   For external public identities, verifiers MUST verify signatures
+   step by step and use an out-of-band trusted Persona, Identity node,
+   or other public parent identity as the trust starting point.  External
+   verification MUST NOT require public disclosure of IdentityRoot.
+
+   For PCA-internal infrastructure, verifiers MUST trace the certificate
+   chain to the hard-coded "Identity/V1/PCA" trust anchor.
+
+8.5.  Infrastructure Verification
+
+   Internal authorization decisions, including Vault authorization,
+   Generation authorization, CRL verification, software update
+   signatures, and protocol migration signatures, MUST rely only on a
+   certificate chain ending at the hard-coded "Identity/V1/PCA" trust
+   anchor.
+
+   Internal verification MUST NOT query DNS and MUST NOT use DNS TXT,
+   WKD, HTTPS hosting, or other external discovery results as an
+   authorization source.
+
+9.  Email Identity
+
+9.1.  Ephemeral Email Identity
+
+   By default, every email MUST use a fresh independent ephemeral
+   Ed25519 key pair.
+
+   The derivation path is:
+
+      Identity/V1/<Persona>/<IdentityNode>/Email/Ephemeral/<RandomEmailId>
+
+   RandomEmailId MUST be a one-time 256-bit CSPRNG value encoded as
+   uppercase hexadecimal.
+
+   The ephemeral key MUST be used only to sign the current email.
+   Implementations SHOULD destroy the private key from memory after
+   signing.
+
+9.2.  Delayed Binding
+
+   If a sender later wants to prove that one or more ephemeral emails
+   belong to a public identity, the sender MUST NOT create a centralized
+   PCA-specific identity list.
+
+   Instead, the sender MUST use an OpenPGP cross-signature certificate
+   compatible with RFC 4880, using a Subkey Binding signature or a
+   Third-party/Generic Certification signature.
+
+   The normal flow is:
+
+   1.  Generate the ephemeral email key.
+
+   2.  Sign the email with the ephemeral private key.
+
+   3.  Use a long-term parent identity, such as
+       Identity/V1/Personal/Identity2026, to issue an OpenPGP
+       certification signature over the ephemeral public key.
+
+   4.  Distribute the detached proof through an independent channel,
+       such as a second email, removable media, instant messaging, or
+       in-person exchange.
+
+   The OpenPGP certification material MUST include the ephemeral public
+   key fingerprint, signature creation time, and appropriate key flags
+   or certification semantics.
+
+9.3.  Delayed Binding Verification
+
+   Verifiers SHOULD:
+
+   1.  Verify the email signature with the ephemeral public key.
+
+   2.  If a detached binding proof is available, parse and verify it
+       with a standard OpenPGP implementation.
+
+   3.  If the parent public key is not already trusted, prompt the user
+       to establish trust out of band.
+
+   4.  Treat DNS discovery only as optional external discovery.  DNS
+       MUST NOT replace mathematical signature verification or
+       out-of-band trust establishment.
+
+   If no trusted binding proof is available, the email MAY be accepted
+   only as an anonymous signature.
+
+9.4.  Parent Signer Flexibility
+
+   A delayed-binding parent signer need not be a PCA-derived Identity
+   node.  Any RFC 4880 compatible parent key MAY sign the ephemeral key.
+
+   Verifiers MUST verify only the mathematical relation between the
+   parent public key and the OpenPGP signature, then apply their own
+   out-of-band trust policy.  Verifiers MUST NOT require the parent key
+   to exist inside the PCA Namespace and MUST NOT use DNS or external
+   discovery to make automatic trust decisions.
+
+9.5.  Ring Signatures
+
+   Implementations MAY support ring signatures, such as CLSAG, as an
+   optional anonymity extension.  Ring signatures are not REQUIRED in
+   PCA v1.2, and their concrete formats are left to higher-layer
+   specifications.
+
+10.  Encrypt Branch
+
+   The Encrypt branch establishes no public trust.  It contains:
+
+      Encrypt/V1/Generation/...
+      Encrypt/V1/Vault/...
+
+   EncryptRoot and its descendants do not need long-term storage because
+   they can be recomputed from the Master Secret.  Encrypt branch keys
+   MUST NOT be used as public identity keys.
+
+11.  Generation Branch
+
+11.1.  Purpose
+
+   Generation is used for deterministic secrets that can be recomputed.
+   Generation keys do not need long-term storage and MUST NOT establish
+   public trust.
+
+11.2.  Paths
+
+   Generation paths MUST be under:
+
+      Encrypt/V1/Generation/
+
+   Examples:
+
+      Encrypt/V1/Generation/PasswordManager
+      Encrypt/V1/Generation/Bitcoin/Mainnet
+      Encrypt/V1/Generation/APIKeys/GitHub
+
+11.3.  Rotation
+
+   For versioned or parallel secrets, implementations SHOULD rotate by
+   adding path components rather than changing an existing path meaning.
+
+   Example:
+
+      Encrypt/V1/Generation/PasswordManager/2025
+
+11.4.  Bitcoin Wallets
+
+   PCA does not redefine Bitcoin wallet standards.  PCA only specifies
+   generation of the Bitcoin root seed.
+
+   For Bitcoin:
+
+      Path: Encrypt/V1/Generation/Bitcoin/Mainnet
+      Output: 64 bytes
+      Use: BIP32 Master Seed
+
+   The 512-bit HKDF output MUST be used directly as the BIP32 Master
+   Seed.  Subsequent wallet derivation SHOULD follow BIP32 and related
+   standards such as BIP44 or BIP84.
+
+   PCA does not require BIP39 mnemonics, because the Master Secret is
+   already the system recovery entry point.
+
+11.4.  Password Generation
+
+11.4.1.  Purpose and Scope
+
+   This section defines a method for deterministically deriving
+   website login passwords from the PCA Master Secret.  The derived
+   passwords are reproducible across devices and time without requiring
+   third-party password managers or synchronization.
+
+   Generated passwords MUST be reproducible, SHOULD NOT be stored
+   long-term, and MUST NOT be used for encryption or digital
+   signatures.  They are intended solely for authentication to external
+   services.
+
+11.4.2.  Password Root
+
+   The logical root path for password generation is:
+
+      Encrypt/V1/Generation/PasswordRoot1
+
+   If PasswordRoot1 is compromised, implementations MAY rotate to
+   PasswordRoot2, PasswordRoot3, etc., following the same derivation
+   pattern.
+
+   The PasswordRootKey (32 bytes) MUST be derived from the parent node
+   "Encrypt/V1/Generation" as follows:
+
+      PasswordRootKey = HKDF-SHA-512(
+         IKM  = derived key at Encrypt/V1/Generation,
+         salt = Namespace ID,
+         info = "Encrypt/V1/Generation/PasswordRoot1",
+         L    = 32
+      )
+
+   PasswordRootKey need not be stored and MAY be recomputed when
+   required.
+
+11.4.3.  Account Derivation Path
+
+   Each account is uniquely identified by a JSON object containing the
+   following fields:
+
+      {
+         "service": <ServiceIdentifier>,
+         "username": <Username>,
+         "counter": <Counter>,
+         "pwdcharset": <Charset>,
+         "pwdlength": <Length>
+      }
+
+   The fields are defined and normalized as follows:
+
+   ServiceIdentifier:
+      A unique identifier for the service, typically a domain name.
+      Unicode domain names MUST be encoded using IDNA 2008 (RFC 5891)
+      to ASCII (Punycode) before inclusion.  IPv6 addresses SHOULD be
+      formatted with brackets as per RFC 3986 (e.g., "[::1]").
+      Port numbers, if present, MUST be appended with a colon
+      (e.g., "example.com:8443", "[fe80::1]:8080").
+
+   Username:
+      The user's account name.  By default, implementations SHOULD
+      convert this to lowercase, as most services are case-insensitive
+      with respect to usernames.  Implementations MUST allow the user
+      to preserve original case for case-sensitive services.
+      If the username contains Unicode characters, it MUST be
+      normalized to NFC after case conversion.
+
+   Counter:
+      A positive integer (starting at 1) used for password rotation.
+      When a password is compromised or a policy requires a change,
+      the counter MUST be incremented.  The counter MUST NOT be reset
+      without creating a new derivation context.
+
+   Charset:
+      One of the predefined character set names listed in Section 11.4.4.1.
+      The value is case-sensitive and MUST match exactly.
+
+   Length:
+      A positive integer specifying the desired password length.
+      If Length is less than the number of buckets B for the chosen
+      Charset (as defined in Table 1), the derivation MUST be rejected
+      with an error indicating the minimum required length.
+
+   Default values (if the user does not specify otherwise):
+      Charset = "PRINTABLE-88"
+      Length = 20
+      Counter = 1
+
+   To derive the account-specific key material, implementations MUST:
+
+   1.  Build the JSON object with the normalized fields as specified
+       above.
+
+   2.  Serialize the object using JCS (including NFC normalization as
+       per Section 7.3).  Compute the SHA-256 hash of the UTF-8 byte
+       stream and encode it as uppercase hexadecimal.  This yields
+       <JSON Hash>.
+
+   3.  Derive RawPasswordKey (64 bytes) using:
+
+          RawPasswordKey = HKDF-SHA-512(
+             IKM  = PasswordRootKey,
+             salt = Namespace ID,
+             info = "Encrypt/V1/Generation/PasswordRoot1/<JSON Hash>",
+             L    = 64
+          )
+
+   4.  Initialize the HKDF-Stream (as defined in Section 6.5) for this
+       password derivation with:
+
+          IKM  = RawPasswordKey
+          path = "Encrypt/V1/Generation/PasswordRoot1/<JSON Hash>"
+
+   All subsequent randomness consumed during password construction MUST
+   be drawn from this stream.
+
+11.4.4.  Character Sets and Bucket Shuffling Algorithm
+
+11.4.4.1.  Predefined Character Sets
+
+   Implementations MUST support the following character set names.
+   The spelling, case, and exact ASCII representation are normative:
+
+      o  PRINTABLE-88
+      o  BASE-62
+      o  BASE-32
+      o  BASE-16
+      o  BASE-10
+
+   Any Charset value not listed here MUST be rejected with an error.
+
+   The character sets and their bucket divisions are frozen for PCA
+   v1.2.  Future extensions may introduce new character sets with new
+   names (e.g., "PRINTABLE-88-V2"), but MUST NOT modify the existing
+   definitions.
+
+11.4.4.2.  Bucket Division and Algorithm
+
+   Each character set is divided into mutually exclusive buckets as
+   shown in Table 1.  The order of buckets in the table is normative;
+   implementations MUST iterate buckets top-to-bottom.
+
+   Table 1: Character Buckets by Charset
+
+   +-----------------+-----------------+----------------------------------+
+   | CharsetName     | Bucket Name     | Bucket Characters                |
+   +-----------------+-----------------+----------------------------------+
+   | PRINTABLE-88    | Uppercase       | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Lowercase       | abcdefghijklmnopqrstuvwxyz       |
+   |                 | Digits          | 0123456789                       |
+   |                 | Special         | !@#$%^&*()-_=+[]{}|;:,.<>?       |
+   | BASE-62         | Uppercase       | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Lowercase       | abcdefghijklmnopqrstuvwxyz       |
+   |                 | Digits          | 0123456789                       |
+   | BASE-32         | Letters         | ABCDEFGHIJKLMNOPQRSTUVWXYZ       |
+   |                 | Digits          | 234567                           |
+   | BASE-16         | Hex Digits      | 0123456789ABCDEF                 |
+   | BASE-10         | Digits          | 0123456789                       |
+   +-----------------+-----------------+----------------------------------+
+
+   Let B be the number of buckets for the chosen Charset.  If
+   Length < B, the implementation MUST reject the derivation and
+   report an error.
+
+   The password construction algorithm proceeds as follows:
+
+   1.  For each bucket in table order (top to bottom), consume bytes
+       from the HKDF-Stream initialized in Section 11.4.3.  For each
+       byte, treat it as an unsigned 8-bit integer (0-255).  Use the
+       simple discard (rejection sampling) method to obtain an unbiased
+       index: let m be the length of the current bucket, compute
+       threshold = floor(256 / m) * m, and discard any byte >= threshold.
+       The first accepted byte gives index in [0, m-1].  Select the
+       character at that index from the bucket and append it to the
+       MandatoryChars array.
+
+   2.  After selecting one character from each bucket, let N = Length - B.
+       If N > 0, continue consuming bytes from the same HKDF-Stream.
+       For each additional character, use rejection sampling over the
+       full character set (concatenation of all buckets) to select an
+       unbiased index.  Append the selected characters to MandatoryChars,
+       resulting in AllChars of length Length.
+
+   3.  Perform a deterministic Fisher-Yates shuffle on AllChars:
+          for i = len(AllChars) - 1 down to 1:
+             j = rejection_sampling(stream, i + 1)
+             swap(AllChars[i], AllChars[j])
+
+       The rejection sampling for j uses the same simple discard method
+       over the HKDF-Stream, with modulus (i + 1).
+
+   4.  Concatenate the shuffled AllChars into a string.  This string is
+       the final generated password.
+
+11.4.5.  Password Strength Notification
+
+   Implementations MAY compute and display an entropy estimate for the
+   generated password as a user reference.  However, this estimate MUST
+   NOT be used to automatically block password output or automatically
+   increment the counter without explicit user intervention.
+
+   After each password generation, implementations MUST clearly display
+   to the user:
+
+   o  The human-readable service name (e.g., example.com).
+   o  The human-readable username.
+   o  The Counter value used.
+   o  The Charset and Length used (MAY be omitted if they are the
+      default values).
+
+12.  Vault Branch
+
+12.1.  Purpose
+
+   Vault protects external secrets and files.  Vault keys can be
+   recovered from the Master Secret, Namespace, and paths.  Vault
+   ciphertext cannot be recreated if lost.
+
+12.2.  Permission Tree
+
+   Vault permission nodes are under:
+
+      Encrypt/V1/Vault/
+
+   Examples:
+
+      Encrypt/V1/Vault/Finance
+      Encrypt/V1/Vault/Finance/2026/Q3
+      Encrypt/V1/Vault/Company1/Department2/User3
+
+   Different PermissionNodes are independent.  Possession of one node
+   key MUST NOT allow recovery of its parent or siblings.
+
+12.3.  File ID
+
+   Every Vault file has a unique File ID.  File ID MUST be:
+
+   *  256 bits.
+   *  Generated by a CSPRNG.
+   *  Encoded as uppercase hexadecimal.
+
+   Example:
+
+      5C5F68690ACDBC085A1C2E86A1C4A7BE0AFC2B3DB160558BEBB026224A7BD8BD
+
+   The complete file path is:
+
+      Encrypt/V1/Vault/<PermissionPath>/<FileID>
+
+   File ID randomness hides file metadata such as names, numbering, and
+   file counts.
+
+12.4.  Per-File Key
+
+   Each file MUST use an independent key.
+
+   The PerFileKey is derived from the PermissionNodeKey using the full
+   file Canonical Info Path:
+
+      Encrypt/V1/Vault/<PermissionPath>/<FileID>
+
+   The XChaCha20-Poly1305 key is the first 32 bytes of the derived
+   output.
+
+12.5.  Encryption Algorithm and Nonce
+
+   Vault file encryption MUST use XChaCha20-Poly1305.
+
+   The default nonce generation method is RECOMMENDED to be a fresh
+   192-bit (24-byte) CSPRNG nonce for each encryption operation.
+
+   Implementations MAY use a deterministic nonce, such as:
+
+      Nonce = HKDF(PerFileKey, "NonceSalt/" + FileID)
+
+   and then use the first 24 bytes as the XChaCha20-Poly1305 nonce.
+
+   Whether random or deterministic nonces are used, implementations MUST
+   ensure that the same PermissionNodeKey and FileID pair never reuses a
+   nonce for multiple encryption operations.
+
+12.6.  Storage Format
+
+   Vault encrypted data MUST use this byte layout:
+
+      bytes 0..23:   Nonce (24 bytes)
+      bytes 24..end: Ciphertext including the 16-byte authentication tag
+
+   Equivalently, the final 16 bytes of the encrypted stream are the
+   authentication tag produced by XChaCha20-Poly1305.
+
+   During decryption, implementations MUST read the nonce from bytes
+   0..23 and decrypt with the PerFileKey and the AAD specified below.
+
+12.7.  Additional Authenticated Data
+
+   Every XChaCha20-Poly1305 encryption operation in Vault MUST use the
+   complete file Canonical Info Path encoded as US-ASCII bytes as AAD.
+
+   Example AAD path:
+
+      Encrypt/V1/Vault/Finance/2026/Q3/5C5F...
+
+   Decryption MUST use the exact same AAD bytes.  If authentication
+   fails, the implementation MUST reject the ciphertext and MUST NOT
+   output plaintext.
+
+13.  Lifecycle
+
+   The lifecycle requirements are:
+
+      Master Secret:
+         Long-term: yes.  Offline: yes.  Recoverable: no.
+
+      Emergency Revocation Private Key:
+         Long-term: yes.  Offline: yes.  Recoverable: no.
+
+      TrustRootKey:
+         Long-term: no.  Offline: no.  Recoverable: yes.
+
+      IdentityRoot, Persona, Identity node:
+         Long-term storage: optional.  Recoverable: yes.
+
+      Ephemeral Email Key:
+         Long-term: no.  Destroy after use when practical.
+
+      EncryptRoot, Generation key, VaultRoot:
+         Long-term: no.  Recoverable: yes.
+
+      Vault ciphertext:
+         Long-term: yes if the protected secret matters.  Recoverable:
+         no; only the key can be recovered.
+
+   Short-lived Identity nodes MAY be removed from online storage after
+   expiration because they can be recomputed.  The Master Secret MUST
+   NOT be destroyed unless the owner intentionally abandons or revokes
+   the whole PCA system.
+
+14.  Security Model
+
+14.1.  Assumptions
+
+   PCA assumes:
+
+   *  The Master Secret and emergency revocation private key are
+      physically protected.
+
+   *  Implementations do not leak secrets through side channels such as
+      timing or cache attacks.
+
+   *  The CSPRNG used for all random material is cryptographically
+      secure and appropriate for secret generation.
+
+14.2.  Non-Goals
+
+   PCA does not defend against continued compromise after the Master
+   Secret is disclosed.  Emergency revocation can declare the Namespace
+   dead, but it cannot prevent an attacker from deriving old keys.
+
+   PCA v1.2 does not defend against a future cryptographically relevant
+   quantum computer breaking Ed25519 or ECDLP-based systems.
+
+15.  Recommended Algorithms
+
+   PCA v1.2 uses or recommends:
+
+      Master Secret:              512-bit CSPRNG output
+      HKDF:                       HKDF-SHA-512
+      Identity:                   Ed25519
+      Emergency Revocation:       Ed25519
+      Vault Encryption:           XChaCha20-Poly1305
+      File Encryption:            XChaCha20-Poly1305
+      Bitcoin Wallet Root Seed:   BIP32 Master Seed
+      Signed JSON Canonical Form: RFC 8785 JCS
+
+16.  Protocol Migration
+
+16.1.  Protocol Migration vs. Namespace Migration
+
+   Protocol migration means upgrading the PCA specification itself, such
+   as algorithm suites, serialization formats, certificate fields,
+   verification rules, or infrastructure trust anchors.
+
+   Protocol migration MUST be authorized by a new specification,
+   migration statement, or software update package signed by
+   "Identity/V1/PCA" or by a migration identity whose chain verifies to
+   "Identity/V1/PCA".
+
+   Namespace migration means revoking an old Namespace and establishing
+   a new Namespace with a new Master Secret after compromise or an
+   equivalent disaster.  Namespace migration is governed by emergency
+   revocation.
+
+   These mechanisms MUST NOT be confused:
+
+   *  Protocol upgrades MUST NOT be represented as emergency revocation
+      statements.
+
+   *  Emergency revocation statements MUST NOT be used to publish
+      ordinary protocol upgrades.
+
+   *  A protocol migration signed by "Identity/V1/PCA" MUST NOT revive,
+      override, or narrow an already effective Namespace revocation.
+
+   *  A successor_namespace_hint in a revocation statement MUST NOT be
+      interpreted as protocol migration and MUST NOT cause automatic
+      trust in the successor Namespace.
+
+16.2.  Trust Continuity
+
+   New protocol trust anchors MUST be signed by the previous trusted
+   "Identity/V1/PCA" identity or by an already trusted migration
+   identity.
+
+   A verifier evaluating a new protocol version MUST verify the complete
+   infrastructure trust chain and confirm that the migration statement
+   applies to the protocol range supported by the verifier.
+
+   During migration, old and new protocols MAY coexist.  Existing
+   identities need not migrate immediately.  New identities SHOULD use
+   the newer protocol version when practical.
+
+   If the new protocol still operates under the same Namespace, the
+   Namespace revocation state remains controlled by that Namespace's
+   revocation statements.  If the new protocol requires a new Namespace,
+   verifiers MUST treat that as Namespace migration and MUST NOT inherit
+   trust automatically from the old Namespace.
+
+17.  Emergency Revocation
+
+17.1.  Key Generation and Storage
+
+   Implementations MUST generate an independent Ed25519 emergency
+   revocation key pair at initialization.
+
+   The emergency private key MUST be stored physically separately from
+   the Master Secret.
+
+   The emergency public key MUST be preconfigured in verifiers, either
+   hard-coded in software or delivered through a trusted update or
+   configuration package.
+
+17.2.  Revocation Statement
+
+   A revocation statement MUST be a JSON object serialized with RFC 8785
+   JCS for signing.
+
+   A revocation statement has these fields:
+
+      version:
+         Integer.  MUST be 1.
+
+      namespace:
+         String.  REQUIRED.  The only Namespace to which this statement
+         applies.
+
+      revoked_at:
+         String.  UTC timestamp in the form YYYY-MM-DDTHH:MM:SSZ.
+
+      reason:
+         String.  Human-readable reason.
+
+      successor_namespace_hint:
+         String.  OPTIONAL.  A hint that a successor Namespace may
+         exist.  This field is not a trust anchor.
+
+      signature:
+         String.  Base64 Ed25519 signature over the JCS-serialized JSON
+         object with the signature field removed.
+
+   Example before adding "signature":
+
+      {
+        "version": 1,
+        "namespace": "PCA-v1/<NamespaceID>",
+        "revoked_at": "2026-07-03T10:00:00Z",
+        "reason": "Master Secret Compromised",
+        "successor_namespace_hint": "PCA-v2/3F8A..."
+      }
+
+   successor_namespace_hint MUST NOT be interpreted as a trust anchor and
+   MUST NOT trigger automatic import, automatic switching, or automatic
+   trust.
+
+17.3.  Scope Binding
+
+   The "namespace" field is REQUIRED and defines the whole and only
+   scope of the revocation statement.
+
+   The emergency private key does not itself represent a Namespace.  A
+   revocation statement MUST explicitly bind to one Namespace.
+
+   A verifier receiving a revocation statement MUST first compare the
+   statement's "namespace" value with the locally trusted Namespace.  If
+   they differ, the verifier MUST immediately ignore the statement and
+   MUST NOT perform signature verification or any state-changing action.
+
+   A valid revocation statement applies to all protocol versions under
+   that Namespace.  The emergency key is not scoped by min_version or
+   max_version.
+
+17.4.  Rebuild After Revocation
+
+   Once a Namespace is validly revoked, it is permanently dead and
+   cannot be reactivated.
+
+   To rebuild, the owner MUST:
+
+   1.  Generate a new 512-bit Master Secret.
+
+   2.  Generate a new independent emergency revocation key pair.
+
+   3.  Choose or register a new Namespace ID.
+
+   4.  Derive new identity roots and child identities under the new
+       Namespace.
+
+   5.  Distribute new trust anchors through out-of-band or otherwise
+       explicitly trusted channels.
+
+17.5.  Broadcast
+
+   A revocation statement SHOULD be distributed through multiple
+   channels to resist network partitions and single points of failure.
+   Channels MAY include:
+
+   *  https://<domain>/.well-known/pca/revocation.crl
+
+   *  personal websites, social media, mailing lists, and OpenPGP key
+      servers.
+
+   *  notarial or blockchain timestamp services for publication-time
+      evidence.
+
+17.6.  Verifier Procedure
+
+   Verifiers MUST process revocation statements in this order:
+
+   1.  Namespace Match:
+       Compare the statement namespace to the locally trusted Namespace.
+       If it differs, stop and ignore the statement.
+
+   2.  Signature Verification:
+       Verify the Ed25519 signature using the preconfigured emergency
+       public key over the JCS bytes of the statement without the
+       signature field.  If invalid, reject.
+
+   3.  Time Check:
+       A verifier MAY check revoked_at against a trusted clock.  If the
+       timestamp is in the future, the verifier SHOULD warn, but SHOULD
+       NOT use clock skew as the only rejection reason.
+
+   4.  Enforcement:
+       If verification succeeds, the verifier MUST reject all subsequent
+       operations under that Namespace, including new signatures and new
+       file decryptions.
+
+   5.  Successor Hint:
+       If successor_namespace_hint exists, the verifier SHOULD display
+       it prominently, but MUST NOT automatically import, switch to, or
+       trust that Namespace.
+
+18.  Domain Binding and External Discovery
+
+18.1.  Scope
+
+   This section applies only to non-native PCA peers or to first-time
+   external discovery.  For nodes that already have trust through a
+   hard-coded anchor, out-of-band import, or another trusted mechanism,
+   this section is OPTIONAL.
+
+   DNS and HTTPS discovery MUST NOT be used for PCA-internal
+   authorization.  They MUST NOT replace certificate-chain verification
+   and MUST NOT be a trust source for Vault, Generation, CRL, software
+   update, or protocol migration decisions.
+
+18.2.  DNS TXT Binding
+
+   A domain administrator SHOULD publish a TXT record to bind a domain
+   to a PCA identity public-key hash without exposing personal identity:
+
+      _pca.example.com. 3600 IN TXT
+      "pca-binding=<SHA-256(IdentityPublicKey).HEX>"
+
+   A verifier MAY:
+
+   1.  Obtain the sender domain.
+
+   2.  Query _pca.<domain> TXT.
+
+   3.  Compare the record hash with the provided public-key hash.
+
+   DNS results only show that the domain owner published a hash.  The
+   verifier MUST still perform mathematical signature verification and
+   SHOULD confirm trust in the parent identity out of band.
+
+18.3.  Well-Known CRL Location
+
+   Implementations SHOULD host CRLs at:
+
+      https://<domain>/.well-known/pca/revocation.crl
+
+   The file MUST be UTF-8 encoded JSON.
+
+18.4.  CRL Format
+
+   A CRL JSON object has this form:
+
+      {
+        "version": 1,
+        "issued_at": "2026-07-03T00:00:00Z",
+        "signer_path": "Identity/V1/PCA",
+        "revoked_identifiers": [
+          "SHA256_IDENTIFIER_HEX"
+        ],
+        "signature": "Base64_Ed25519_Signature"
+      }
+
+   The JSON object without "signature" MUST be JCS-serialized before
+   signing.  The signature MUST be Ed25519.
+
+   signer_path MUST be a PCA internal Identity path and MUST be
+   "Identity/V1/PCA" or a dedicated revocation sub-identity whose chain
+   verifies to "Identity/V1/PCA".
+
+   Each revoked identifier SHOULD be a SHA-256 value encoded as
+   uppercase hexadecimal.
+
+18.5.  CRL Verification
+
+   Verifiers MUST process CRLs in this order:
+
+   1.  Fetch:
+       Fetch the CRL from the well-known HTTPS URL.  The URL is only
+       discovery and transport; it is not authorization.
+
+   2.  Signature:
+       JCS-serialize the JSON object without "signature" and verify the
+       Ed25519 signature using the key identified by signer_path.  If
+       invalid, reject.
+
+   3.  Chain Verification:
+       Verify that the signer key traces to the hard-coded
+       "Identity/V1/PCA" trust anchor.  If it cannot, reject.
+
+   4.  Identifier Check:
+       Check whether the target identifier is in revoked_identifiers.
+
+   CRL verification MUST NOT query DNS and MUST NOT use DNS TXT records
+   as signer authorization.
+
+19.  Future Extensions
+
+   Future PCA versions may define:
+
+   *  Master Secret sharding, such as Shamir Secret Sharing or
+      SLIP-0039-style threshold backup.
+
+   *  Multi-device synchronization and state management.
+
+   *  HSM integration.
+
+   *  YubiKey, FIDO2, or WebAuthn binding.
+
+   *  Post-quantum algorithms.
+
+   *  Zero-knowledge identity proofs.
+
+   *  Audit logs.
+
+   Extensions SHOULD use new branches, new paths, or new protocol
+   versions.  They MUST NOT change the meaning of existing Canonical
+   Info Paths.
+
+Appendix A.  Design Philosophy (Non-Normative)
+
+   PCA is built around one durable secret and many recoverable derived
+   keys.  It does not try to reduce the number of keys.  It reduces the
+   number of secrets that must be stored forever.
+
+   Identity, Generation, and Vault intentionally solve different
+   problems: public trust, deterministic secret generation, and
+   protection of external secrets.  Keeping these domains separate is
+   essential to the security and privacy model.
+
+Appendix B.  PCA and BIP32 (Normative)
+
+   PCA and BIP32 share the concept of a deterministic hierarchy derived
+   from one seed.  BIP32 uses numeric wallet paths; PCA uses human-
+   readable ASCII Canonical Info Paths.
+
+   PCA does not replace BIP32 derivation.  It derives a 64-byte BIP32
+   Master Seed under a Generation path, after which ordinary BIP32
+   wallet derivation applies.
+
+Appendix C.  OpenPGP Delayed Binding (Normative)
+
+   Ephemeral email public keys SHOULD be represented as standard OpenPGP
+   transferable public keys when delayed binding is needed.
+
+   A parent identity signing an ephemeral email key MUST use an RFC 4880
+   compatible signature type, specifically a Subkey Binding signature
+   (0x18) or a Generic Certification signature (0x10).
+
+   The signature material MUST include:
+
+   *  Issuer Fingerprint.
+
+   *  Signature Creation Time.
+
+   *  Key Flags or equivalent certification semantics indicating the
+      signature is for certification/binding.
+
+   Verifiers MUST use a standard OpenPGP parser and verifier, import or
+   select an out-of-band trusted parent public key, verify the signature
+   chain, and accept grouping only if the parent key is trusted.
+
+   PCA does not require email clients to automatically discover, fetch,
+   or parse delayed-binding proofs.
