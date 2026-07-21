@@ -709,7 +709,7 @@ Table of Contents
    Generation keys do not need long-term storage and MUST NOT establish
    public trust.
 
-11.2.  Paths
+11.2.  Paths & Rotation
 
    Generation paths MUST be under:
 
@@ -721,8 +721,6 @@ Table of Contents
       Encrypt/V1/Generation/Bitcoin/Mainnet
       Encrypt/V1/Generation/APIKeys/GitHub
 
-11.3.  Rotation
-
    For versioned or parallel secrets, implementations SHOULD rotate by
    adding path components rather than changing an existing path meaning.
 
@@ -730,7 +728,7 @@ Table of Contents
 
       Encrypt/V1/Generation/PasswordManager/2025
 
-11.4.  Bitcoin Wallets
+11.3.  Bitcoin Wallets
 
    PCA does not redefine Bitcoin wallet standards.  PCA only specifies
    generation of the Bitcoin root seed.

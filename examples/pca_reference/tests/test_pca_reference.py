@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import zipfile
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 from cryptography.hazmat.primitives.serialization import Encoding, PrivateFormat, NoEncryption
@@ -38,7 +39,14 @@ from pca_core.revocation import (
     verify_revocation_statement,
 )
 from pca_core.trust import EXAMPLE_NAMESPACE, set_hardcoded_namespace
-from pca_core.vault import decrypt_file_bytes, encrypt_file_bytes
+from pca_core.vault import (
+    VAULT_PACKAGE_CIPHERTEXT_NAME,
+    VAULT_PACKAGE_METADATA_NAME,
+    decrypt_file_bytes,
+    encrypt_file_bytes,
+    pack_vault_ciphertext,
+    unpack_vault_package,
+)
 
 
 MASTER = bytes(range(64))
@@ -139,6 +147,20 @@ class PCAReferenceTests(unittest.TestCase):
         self.assertEqual(decrypted, plaintext)
         with self.assertRaises(PCAAuthenticationError):
             decrypt_file_bytes(MASTER, NAMESPACE, "Finance/2026/Q4", encrypted.file_id, encrypted.data)
+
+    def test_vault_package_contains_metadata_and_ciphertext(self) -> None:
+        encrypted = encrypt_file_bytes(MASTER, NAMESPACE, "Finance/2026/Q3", b"vault secret")
+        package_bytes = pack_vault_ciphertext(encrypted, "Finance/2026/Q3")
+        with zipfile.ZipFile(BytesIO(package_bytes), "r") as package:
+            self.assertEqual(set(package.namelist()), {VAULT_PACKAGE_METADATA_NAME, VAULT_PACKAGE_CIPHERTEXT_NAME})
+            metadata = loads_no_duplicates(package.read(VAULT_PACKAGE_METADATA_NAME).decode("utf-8"))
+            self.assertEqual(metadata["file_id"], encrypted.file_id)
+            self.assertEqual(metadata["permission_path"], "Finance/2026/Q3")
+            self.assertEqual(package.read(VAULT_PACKAGE_CIPHERTEXT_NAME), encrypted.data)
+        unpacked = unpack_vault_package(package_bytes)
+        self.assertEqual(unpacked.file_id, encrypted.file_id)
+        self.assertEqual(unpacked.permission_path, "Finance/2026/Q3")
+        self.assertEqual(unpacked.encrypted, encrypted.data)
 
     def test_jcs_canonical_order_and_duplicate_rejection(self) -> None:
         self.assertEqual(canonicalize({"b": 2, "a": 1}), '{"a":1,"b":2}')
@@ -553,6 +575,14 @@ class PCAReferenceTests(unittest.TestCase):
                 "--permission-path",
                 permission_path,
             ]
+            decrypt_source_args = [
+                "--parent-key-hex",
+                parent_key,
+                "--parent-path",
+                parent_path,
+                "--namespace",
+                NAMESPACE,
+            ]
             with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
                 self.assertEqual(
                     cli_main(
@@ -570,14 +600,16 @@ class PCAReferenceTests(unittest.TestCase):
                     0,
                 )
             metadata = loads_no_duplicates(metadata_path.read_text(encoding="utf-8"))
+            with zipfile.ZipFile(encrypted_path, "r") as package:
+                self.assertEqual(set(package.namelist()), {VAULT_PACKAGE_METADATA_NAME, VAULT_PACKAGE_CIPHERTEXT_NAME})
+                package_metadata = loads_no_duplicates(package.read(VAULT_PACKAGE_METADATA_NAME).decode("utf-8"))
+            self.assertEqual(package_metadata, metadata)
             with redirect_stderr(StringIO()), redirect_stdout(StringIO()):
                 self.assertEqual(
                     cli_main(
                         [
                             "vault-decrypt",
-                            *source_args,
-                            "--file-id",
-                            metadata["file_id"],
+                            *decrypt_source_args,
                             "--input",
                             str(encrypted_path),
                             "--output",

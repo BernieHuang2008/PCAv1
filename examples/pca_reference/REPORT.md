@@ -35,7 +35,7 @@
 | 验证端 MUST 只依赖数学签名和带外信任；MUST NOT 要求父级在 PCA Namespace；MUST NOT 用 DNS 自动裁决 | 外部 OpenPGP 父级支持；trusted public key/fingerprint 参数承接带外信任；不查 DNS | ✅ |
 | Encrypt keys MUST NOT 作公开身份；Generation MUST NOT 建立公开信任；Generation paths MUST under `Encrypt/V1/Generation/`；BIP32 512-bit HKDF 输出 MUST 直接作为 seed | 路径和长度校验正确；BIP32 返回 64 字节 | ✅ |
 | Vault FileID MUST 256-bit CSPRNG uppercase HEX；每文件 MUST 独立 key；节点 key 泄露 MUST NOT 恢复父/兄弟 | FileID 用 `secrets.token_bytes(32)`；per-file key 派生；HKDF 单向 | ✅ |
-| Vault MUST 使用 XChaCha20-Poly1305；nonce 对同 PermissionNodeKey+FileID MUST 不重复；格式 MUST 为 nonce+ciphertext+tag；AAD MUST 为完整 path；认证失败 MUST NOT 输出明文 | PyNaCl/libsodium XChaCha；每次自动新 FileID+24-byte nonce；AAD 一致；失败抛认证错误 | ✅ |
+| Vault MUST 使用 XChaCha20-Poly1305；nonce 对同 PermissionNodeKey+FileID MUST 不重复；格式 MUST 为 nonce+ciphertext+tag；AAD MUST 为完整 path；认证失败 MUST NOT 输出明文 | PyNaCl/libsodium XChaCha；每次自动新 FileID+24-byte nonce；AAD 一致；CLI `.pca` 外层 ZIP 容器包含 metadata 与密文；失败抛认证错误 | ✅ |
 | Protocol migration MUST 由 `Identity/V1/PCA` 或其链签发；MUST NOT 与 emergency revocation 混用；新 trust anchor MUST 由旧锚签；verifier MUST 验完整链和适用范围 | 有 JCS+Ed25519 statement_type；直接用 `HARDCODED_IDENTITY_PCA` 验签；但无子身份链验证、协议范围验证 | ⚠️ 直接锚已补，链式回溯仍不完整。部分改善，仍不完整 |
 | Emergency revocation statement MUST JCS JSON；version MUST=1；signature MUST Ed25519 over no-signature payload；hint MUST NOT 自动信任 | 字段、JCS、Ed25519、hint 只返回不切换 | ✅ |
 | Revocation verifier MUST 先比对 namespace；不同 MUST ignore 且 MUST NOT 验签/改状态；有效后 MUST 拒绝后续操作；hint MUST NOT 自动导入/切换/信任 | 顺序正确；`HARDCODED_NAMESPACE` 和 `HARDCODED_EMERGENCY_REVOCATION_PUBLIC_KEY` 支持预配置；`require_namespace_not_revoked()` 和 CLI guard 可拒绝；但没有持久化/自动发现状态 | ✅ 核心逻辑符合，生产完整性不足 |

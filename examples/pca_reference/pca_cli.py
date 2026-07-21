@@ -59,6 +59,10 @@ from pca_core.vault import (
     derive_per_file_key,
     derive_permission_node_key,
     encrypt_file_bytes_with_permission_key,
+    is_vault_package,
+    pack_vault_ciphertext,
+    unpack_vault_package,
+    vault_metadata,
     vault_file_full_path,
     vault_permission_full_path,
 )
@@ -108,10 +112,11 @@ def _derive_node_key(args: argparse.Namespace, target_path: str, length: int) ->
     return derive_descendant_key(parent_key, args.namespace, args.parent_path, target_path, length)
 
 
-def _derive_vault_permission_key(args: argparse.Namespace) -> bytes:
-    full_path = vault_permission_full_path(args.permission_path)
+def _derive_vault_permission_key(args: argparse.Namespace, permission_path: str | None = None) -> bytes:
+    permission_path = permission_path or args.permission_path
+    full_path = vault_permission_full_path(permission_path)
     if getattr(args, "master_hex", None) and not _has_parent(args):
-        return derive_permission_node_key(_master(args.master_hex), args.namespace, args.permission_path)
+        return derive_permission_node_key(_master(args.master_hex), args.namespace, permission_path)
     return _derive_node_key(args, full_path, 64)
 
 
@@ -308,27 +313,38 @@ def cmd_vault_encrypt(args: argparse.Namespace) -> None:
     plaintext = Path(args.input).read_bytes()
     permission_key = _derive_vault_permission_key(args)
     encrypted = encrypt_file_bytes_with_permission_key(permission_key, args.namespace, args.permission_path, plaintext)
-    Path(args.output).write_bytes(encrypted.data)
-    metadata = {
-        "canonical_path": encrypted.canonical_path,
-        "file_id": encrypted.file_id,
-        "permission_path": args.permission_path,
-    }
+    metadata = vault_metadata(encrypted, args.permission_path)
+    Path(args.output).write_bytes(pack_vault_ciphertext(encrypted, args.permission_path))
     if args.metadata:
         Path(args.metadata).write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(metadata, indent=2, sort_keys=True), flush=True)
     note(
-        "keep the metadata next to the ciphertext; File ID and permission path are required for recovery. "
+        "wrote a .pca ZIP package containing metadata.json and ciphertext.bin; keep this package backed up. "
         f"See {MANUAL_URL}#vault-operations."
     )
 
 
 def cmd_vault_decrypt(args: argparse.Namespace) -> None:
     enforce_revocation_guard(args)
-    encrypted = Path(args.input).read_bytes()
-    permission_key = _derive_vault_permission_key(args)
+    input_data = Path(args.input).read_bytes()
+    if is_vault_package(input_data):
+        package = unpack_vault_package(input_data)
+        if args.permission_path and args.permission_path != package.permission_path:
+            raise PCAValidationError("provided --permission-path does not match Vault package metadata")
+        if args.file_id and args.file_id != package.file_id:
+            raise PCAValidationError("provided --file-id does not match Vault package metadata")
+        permission_path = package.permission_path
+        file_id = package.file_id
+        encrypted = package.encrypted
+    else:
+        if not args.permission_path or not args.file_id:
+            raise PCAValidationError("legacy Vault ciphertext requires --permission-path and --file-id")
+        permission_path = args.permission_path
+        file_id = args.file_id
+        encrypted = input_data
+    permission_key = _derive_vault_permission_key(args, permission_path)
     plaintext = decrypt_file_bytes_with_permission_key(
-        permission_key, args.namespace, args.permission_path, args.file_id, encrypted
+        permission_key, args.namespace, permission_path, file_id, encrypted
     )
     Path(args.output).write_bytes(plaintext)
     print("decryption ok")
@@ -649,15 +665,15 @@ def build_parser() -> argparse.ArgumentParser:
     enc.add_argument("--permission-path", required=True)
     enc.add_argument("--input", required=True)
     enc.add_argument("--output", required=True)
-    enc.add_argument("--metadata")
+    enc.add_argument("--metadata", help="also write a sidecar copy of the package metadata JSON")
     enc.set_defaults(func=cmd_vault_encrypt)
 
     dec = sub.add_parser("vault-decrypt", help="decrypt a file using PCA Vault rules")
     add_source_args(dec)
     add_revocation_guard_args(dec)
     dec.add_argument("--namespace", required=True)
-    dec.add_argument("--permission-path", required=True)
-    dec.add_argument("--file-id", required=True)
+    dec.add_argument("--permission-path", help="required only for legacy raw ciphertext input")
+    dec.add_argument("--file-id", help="required only for legacy raw ciphertext input")
     dec.add_argument("--input", required=True)
     dec.add_argument("--output", required=True)
     dec.set_defaults(func=cmd_vault_decrypt)

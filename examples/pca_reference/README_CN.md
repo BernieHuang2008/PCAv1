@@ -197,16 +197,16 @@ python3 examples\pca_reference\pca_cli.py email-verify-binding --email-signature
 加密文件：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py vault-encrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --input secret.txt --output secret.pca --metadata secret.pca.json
+python3 examples\pca_reference\pca_cli.py vault-encrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --input secret.txt --output secret.pca
 ```
 
 解密文件：
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py vault-decrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --file-id <FILE_ID> --input secret.pca --output secret.txt
+python3 examples\pca_reference\pca_cli.py vault-decrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --input secret.pca --output secret.txt
 ```
 
-Vault 使用 256-bit File ID、24 字节 nonce、per-file key 和完整 Canonical Info Path AAD。请同时备份密文与 metadata；Vault 密文丢失后外部秘密无法由 Master Secret 重新生成。
+Vault 使用 256-bit File ID、24 字节 nonce、per-file key 和完整 Canonical Info Path AAD。`.pca` 是用于传输和备份的 ZIP 容器，内部包含 `metadata.json` 与 `ciphertext.bin`；`--metadata` 只是在需要时额外导出一份 sidecar metadata。旧版裸密文输入仍需手动提供 `--permission-path` 与 `--file-id`。Vault 密文丢失后外部秘密无法由 Master Secret 重新生成。
 
 ## 紧急废止
 
@@ -280,7 +280,7 @@ python3 examples\pca_reference\pca_cli.py verify-migration --namespace <NAMESPAC
 - `pca_core/email_identity.py`：邮件临时身份、邮件签名验证、OpenPGP 延迟绑定证明。
 - `pca_core/generation.py`：Generation secret、64 字节 BIP32 seed，以及 Patch 1 密码生成算法。
 - `pca_core/xchacha20poly1305.py`：PyNaCl/libsodium XChaCha20-Poly1305 wrapper，不手写密码算法。
-- `pca_core/vault.py`：Vault 文件加密、AAD、nonce、metadata。
+- `pca_core/vault.py`：Vault 文件加密、AAD、nonce、metadata 与 `.pca` ZIP 容器。
 - `pca_core/jcs.py`：RFC 8785 JCS。
 - `pca_core/revocation.py`：紧急废止声明签名与验证。
 - `pca_core/crl.py`：CRL 签名与验证。

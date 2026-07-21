@@ -309,21 +309,22 @@ Email signing creates a new 256-bit `RandomEmailId` by default and signs the mes
 Encrypt a file:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py vault-encrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --input secret.txt --output secret.pca --metadata secret.pca.json
+python3 examples\pca_reference\pca_cli.py vault-encrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --input secret.txt --output secret.pca
 ```
 
 Decrypt a file:
 
 ```powershell
-python3 examples\pca_reference\pca_cli.py vault-decrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --permission-path Finance/2026/Q3 --file-id <FILE_ID> --input secret.pca --output secret.txt
+python3 examples\pca_reference\pca_cli.py vault-decrypt --master-hex <MASTER_HEX> --namespace <NAMESPACE> --input secret.pca --output secret.txt
 ```
 
 Manual actions:
 
-- Keep ciphertext and metadata together.
+- Treat `.pca` as the transfer file. It is a ZIP package containing `metadata.json` and `ciphertext.bin`.
 - Back up Vault ciphertext; it cannot be recreated from Master Secret.
 - The key can be recovered, but the encrypted external secret cannot be recovered if the ciphertext is lost.
-- Preserve `permission_path` and `file_id`; they are required to recompute the file key.
+- Use `--metadata` during encryption only when a sidecar copy of the metadata JSON is useful.
+- Legacy raw ciphertext input still requires `--permission-path` and `--file-id`.
 
 ## Emergency Revocation
 
@@ -470,7 +471,7 @@ Wraps PyNaCl/libsodium XChaCha20-Poly1305. No cipher rounds are implemented by h
 
 `pca_core/vault.py`
 
-Implements Vault file encryption. Each file gets a 256-bit File ID, a fresh 192-bit nonce, a per-file key, and full-path AAD.
+Implements Vault file encryption and `.pca` packaging. Each file gets a 256-bit File ID, a fresh 192-bit nonce, a per-file key, full-path AAD, and a ZIP package containing metadata plus ciphertext.
 
 `pca_core/jcs.py`
 
