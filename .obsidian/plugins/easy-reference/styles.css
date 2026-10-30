@@ -1,0 +1,159 @@
+/*
+
+This CSS file will be included with your plugin, and
+available in the app when your plugin is enabled.
+
+If your plugin does not need CSS, delete this file.
+
+*/
+
+/* 交叉引用渲染样式 */
+.crossref-rendered {
+    /* 使用虚线下划线突出显示这是渲染的内容 */
+    border-bottom: 1px dotted var(--text-accent);
+    
+    /* 添加轻微的背景色 */
+    background-color: var(--background-modifier-accent);
+    
+    /* 轻微的内边距 */
+    padding: 1px 2px;
+    
+    /* 圆角 */
+    border-radius: 2px;
+    
+    /* 鼠标悬停时的提示 */
+    cursor: help;
+    
+    /* 字体样式，稍微区别于正常文本 */
+    font-weight: 500;
+}
+
+/* 实时交叉引用渲染样式 */
+.crossref-live-render {
+    display: inline-block;
+    border-radius: 3px;
+    padding: 2px 4px;
+    font-weight: 500;
+    font-size: 0.9em;
+    transition: all 0.15s ease-in-out;
+    cursor: text;
+    position: relative;
+    user-select: none;
+    
+    /* 添加微妙的动画效果 */
+    animation: fadeIn 0.2s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: scale(0.95);
+    }
+    to {
+        opacity: 1;
+        transform: scale(1);
+    }
+}
+
+/* 有效的交叉引用 */
+.crossref-live-render.valid {
+    color: var(--text-accent);
+    background-color: var(--background-modifier-accent);
+    border: 1px solid var(--background-modifier-border);
+}
+
+.crossref-live-render.valid:hover {
+    background-color: var(--background-modifier-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+/* 无效的交叉引用 */
+.crossref-live-render.invalid {
+    color: var(--text-error);
+    background-color: var(--background-modifier-error);
+    border: 1px solid var(--color-red);
+    text-decoration: line-through;
+}
+
+.crossref-live-render.invalid:hover {
+    background-color: var(--background-modifier-error-hover);
+}
+
+/* 暗色主题适配 */
+.theme-dark .crossref-live-render.valid {
+    background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.15);
+    border-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.3);
+}
+
+.theme-dark .crossref-live-render.valid:hover {
+    background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.25);
+}
+
+.theme-dark .crossref-live-render.invalid {
+    background-color: rgba(255, 0, 0, 0.15);
+    border-color: rgba(255, 0, 0, 0.3);
+}
+
+/* 鼠标悬停时的效果 */
+.crossref-rendered:hover {
+    background-color: var(--background-modifier-hover);
+    border-bottom-color: var(--text-accent-hover);
+}
+
+/* 暗色主题适配 */
+.theme-dark .crossref-rendered {
+    border-bottom-color: var(--text-accent);
+    background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.1);
+}
+
+.theme-dark .crossref-rendered:hover {
+    background-color: rgba(var(--accent-r), var(--accent-g), var(--accent-b), 0.2);
+}
+
+/* 隐藏 pandoc-crossref 标记 */
+/* 隐藏图片、表格、章节的ID标记 {#fig:xxx}, {#tbl:xxx}, {#sec:xxx} */
+.markdown-preview-view .crossref-id-marker,
+.markdown-preview-view [data-crossref-id] {
+    display: none !important;
+}
+
+/* 隐藏被JavaScript标记的crossref ID */
+.pandoc-crossref-hidden {
+    display: none !important;
+}
+
+/* 隐藏表格标题行中的ID标记 */
+.markdown-preview-view table caption .crossref-id,
+.markdown-preview-view .table-title .crossref-id {
+    display: none !important;
+}
+
+/* 图表标题样式 */
+.markdown-preview-view .figure-caption,
+.markdown-preview-view .table-caption {
+    font-weight: 600;
+    color: var(--text-normal);
+    margin-top: 0.5em;
+    margin-bottom: 0.5em;
+    text-align: center;
+    font-size: 0.9em;
+}
+
+/* 图片标题居中显示 */
+.markdown-preview-view img + p,
+.markdown-preview-view img + div {
+    text-align: center;
+    font-style: italic;
+    color: var(--text-muted);
+    margin-top: 0.5em;
+}
+
+/* 表格标题样式 */
+.markdown-preview-view table caption {
+    caption-side: top;
+    text-align: center;
+    font-weight: 600;
+    margin-bottom: 0.5em;
+    color: var(--text-normal);
+}

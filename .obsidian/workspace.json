@@ -1,0 +1,253 @@
+{
+  "main": {
+    "id": "4c22d1af6d44bebe",
+    "type": "split",
+    "children": [
+      {
+        "id": "775cc349ec5ed7ab",
+        "type": "tabs",
+        "dimension": 58.28445747800587,
+        "children": [
+          {
+            "id": "de0cba24a9f2de53",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "patches/PATCH2/PCAv1.2-patch2.md",
+                "mode": "source",
+                "source": false,
+                "backlinks": true,
+                "backlinkOpts": {
+                  "collapseAll": false,
+                  "extraContext": false,
+                  "sortOrder": "alphabetical",
+                  "showSearch": false,
+                  "searchQuery": "",
+                  "backlinkCollapsed": false,
+                  "unlinkedCollapsed": true
+                }
+              },
+              "icon": "lucide-file",
+              "title": "PCAv1.2-patch2"
+            },
+            "group": "df403560df4ca620"
+          }
+        ]
+      },
+      {
+        "id": "c19c29d3c8e11212",
+        "type": "tabs",
+        "dimension": 41.71554252199414,
+        "children": [
+          {
+            "id": "e1b6c0c32a086847",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "patches/PATCH2/PCAv1.2-patch2.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "PCAv1.2-patch2 的大纲"
+            },
+            "group": "df403560df4ca620"
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "9c8343a77d625ad4",
+    "type": "split",
+    "children": [
+      {
+        "id": "213e84ae9ec3130e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "097abefd625838f8",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-folder-closed",
+              "title": "文件列表"
+            }
+          },
+          {
+            "id": "b11cab67333f1e5c",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "搜索"
+            }
+          },
+          {
+            "id": "f0d1b8c71632f2f0",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-bookmark",
+              "title": "书签"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "fff9180897201394",
+    "type": "split",
+    "children": [
+      {
+        "id": "d7335f8145490a79",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "6d2bda28cdf7186e",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "patches/PATCH2/PCAv1.2-patch2.md",
+                "collapseAll": true,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "反向链接"
+            }
+          },
+          {
+            "id": "0cc9d8699c116ad4",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "出链"
+            }
+          },
+          {
+            "id": "5ea1db97d086e0c3",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "标签"
+            }
+          },
+          {
+            "id": "d459f421cc4d291b",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "添加笔记属性"
+            }
+          },
+          {
+            "id": "f127fe5e4a8bf83f",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "未命名 4.base",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "大纲"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:打开快速切换": false,
+      "graph:查看关系图谱": false,
+      "canvas:新建白板": false,
+      "daily-notes:打开/创建今天的日记": false,
+      "templates:插入模板": false,
+      "command-palette:打开命令面板": false,
+      "bases:新建数据库": false
+    }
+  },
+  "active": "e1b6c0c32a086847",
+  "lastOpenFiles": [
+    "未命名.base",
+    "patches/PATCH2/PCAv1.2-patch2.md",
+    "examples/pca_lib/bychapter/__pycache__/c7s2.cpython-312.pyc",
+    "examples/pca_lib/bychapter/__pycache__/c6s1.cpython-312.pyc",
+    "examples/pca_lib/bychapter/__pycache__/__init__.cpython-312.pyc",
+    "examples/pca_lib/bychapter/c9s4s2.py",
+    "examples/pca_lib/bychapter/c9s4s1.py",
+    "examples/pca_lib/bychapter/c9s4.py",
+    "未命名.md",
+    "examples/pca_lib/bychapter/c8s2.py",
+    "examples/pca_lib/bychapter/c4s2.py",
+    "examples/pca_lib/bychapter/c7s3.py",
+    "patches/PATCH1/PCAv1.2-patch1.md",
+    "patches/PATCH1/PATCH1.md",
+    "patches/PATCH1/announcement.md",
+    "examples/pca_reference/README.md",
+    "examples/pca_reference/README_CN.md",
+    "examples/pca_reference/REPORT.md",
+    "PCAv1.2.md",
+    "patches/PATCH2/PCA-md/c3/index.md",
+    "patches/PATCH2/PCA-md/c2/index.md",
+    "未命名 1.md",
+    "patches/PATCH2/PCA-md/c1/index.md",
+    "patches/PATCH2/PCA-md/未命名.md",
+    "patches/PATCH2/PCA-md/c0/index.md"
+  ]
+}

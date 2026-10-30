@@ -1,0 +1,79 @@
+修订：
+---
+1. MUST：17节紧急废止声明的json格式调整为如下格式：
+```json
+{
+  "version": 1,
+  "namespace": "PCA-v1/<NamespaceID>",
+  "revoked_at": "2026-07-03T10:00:00Z",
+  "reason": "Master Secret Compromised",
+  "successor_namespace_hint": "Optional: PCA-v2/3F8A...",
+  "signature": "HEX Message Signature By Emergency Revocation Private Key"
+}
+```
+其中，signature字段的计算步骤如下：
+1. **序列化**：整个 JSON 对象（不含 `signature` 字段）**MUST** 使用 **RFC 8785（JCS）** 进行序列化。
+2. **签名计算**：使用 紧急废止私钥 ，对 JCS 序列化后的字节流进行签名。
+
+该信息将被分发到 **多个节点**。任何PCA实例 **MUST** 约定至少1个分发节点，**MUST**预留允许多节点验证的设计。所有 PCA 客户端 **MUST** 允许设置多个 **硬编码的** 紧急废止节点，并且在每次PCA操作前检查所有设置的节点。
+
+只要从任意的节点获取到有效的紧急废止声明，则**MUST**立刻：
+- 终止所有正在进行的PCA操作
+- 取消对该PCA实例下的所有证书、密钥的信任。
+- 立即进行自毁操作，安全地销毁一切证书、密钥、加密的密文等。
+
+紧急废止声明的发布渠道为：
+`<your-domain>/.well-known/pca/emg-revk.crl`
+
+---
+2. MUST: 第18.3节的CRL JSON格式修改为以下格式：
+```json
+{
+  "version": 1,
+  "issued_at": 1786499331,
+  "signer_path": "Identity/V1/PCA/Father1/Father2/This",
+  "trust_chain": [
+    "Identity/V1/PCA/Father1:<PUB KEY of Identity/V1/PCA/Father1 in HEX>:<SIGNATURE by Identity/V1/PCA>",
+    "Identity/V1/PCA/Father1/Father2:<PUB KEY of Identity/V1/PCA/Father1/Father2 in HEX>:<SIGNATURE by Identity/V1/PCA/Father1>",
+    "Identity/V1/PCA/Father1/Father2/This:<PUB KEY of Identity/V1/PCA/Father1/Father2/This in HEX>:<SIGNATURE by Identity/V1/PCA/Father1/Father2>"
+  ],
+  "revoked_identifiers": [
+    "Identity/V1/PCA/InvalidNode1",
+    "Identity/V1/PCA/NotRevoked1/InvalidNode2",
+    ...
+  ],
+  "signature": "Message Signature by priv_key(signer_path) in HEX"
+}
+```
+字段说明：
+- version（int）: PCA版本，固定为数字1。
+- issued_at（int）: 发布时间，标准64位UNIX“秒”时间戳，起始日期为UTC+0 1970-01-01 00:00:00
+- signer_path（str）: 签发该crl的签名者密钥路径。**MUST** 符合第7章的强制定义，且是该PCA实例下的Identity分支的有效路径。
+- trust_chain（list[str]）: 信任链。信任根**MUST**为Identity/V1/PCA，且能被硬编码的Identity/V1/PCA公钥校验。
+该字段中的每一项都是信任链的一个节点。要求如下：
+  * **MUST** 按照父->子的顺序书写，即后一环信任链**MUST**由前一环信任链签名。
+  * 每一项的格式为："<Path>:<PubKey>:<Sign>"
+  * <Path> **MUST** 为有效的Identity分支下的子路径。
+  * <PubKey> **MUST**为使用全大写HEX编码的<Path>的公钥。
+  * <Sign> **MUST** 为列表前一项信任链的签名（signature）。消息内容为本条目<PubKey>的二进制值。
+  * trust_chain列表的第一项**MUST**被Identity/V1/PCA直接签名，且该签名**MUST**被硬编码的Identity/V1/PCA公钥校验。
+  * trust_chain列表的最后一项**MUST**为signer_path。即"<signer_path>:<signer_path PubKey>:<Sign>"的形式。
+  * trust_chain **MUST** 被逐项解析、逐项校验。若有一项不符合/信任链中断，则立刻停止校验，并丢弃该CRL JSON的所有内容。
+- revoked_identifiers（list[str]）: 被撤销的证书列表。每一项都是一个有效的Identity分支下的合法Path。且撤销一个节点==撤销该节点及其所有子节点。但不影响其父节点或者兄弟节点。
+例如，当撤销"Identity/V1/PCA/InvalidNode1"时，"Identity/V1/PCA/InvalidNode1"以及"Identity/V1/PCA/InvalidNode1/Son1"以及"Identity/V1/PCA/InvalidNode1/Son1/..."都会同步失效；但是撤销"Identity/V1/PCA/NotRevoked1/InvalidNode2"时，"Identity/V1/PCA/NotRevoked1"依旧有效。
+- signature(str)：由位于signer_path的私钥签发的签名。内容按照如下步骤计算：
+1. 去除字段：仅去除"signature"字段，保留其他字段的完整内容。
+2. 序列化：整个 JSON 对象（不含 `signature` 字段）**MUST** 使用 **RFC 8785（JCS）** 进行序列化。
+3. 签名：对 JCS 序列化后的字节流进行 Ed25519 签名，以Uppercase HEX形式作为"signature"字段的值。
+---
+2. SHOULD：PCA客户端 **SHOULD** 拒绝issued_at时间戳在10分钟（600秒）以前的crl。
+PCA客户端**MAY**允许用户设置多个crl domain作为“源”。
+
+当且仅当一个预编码的“源”符合以下**所有** 条件时，认定其为一个“可信源”，否则完全忽略该“源”的所有返回值：
+- 签名密钥拥有有效的信任链，且信任根为`Identity/V1/PCA`。可以使用**硬编码**的`Identity/V1/PCA`公钥验证信任根。
+- signature与消息内容相符。
+- issued_at字段所记录的时间戳在10分钟（600秒）以内。安全等级更高的客户端**MAY**使用更短的安全时间，但不得低于10分钟。
+- 无内部矛盾：revoked_identifiers列表中，没有撤销过自己和自己的祖先密钥。
+例如，签名密钥路径为"Identity/V1/PCA/father1/father2/this"，若revoked_identifiers列表中出现任意的"Identity/V1/PCA/father1"或者"Identity/V1/PCA/father1/father2"或者"Identity/V1/PCA/father1/father2/this"，则该“源”存在“内部矛盾”，不能被认定为“可信源”。
+
+当且仅当有至少一个“可信源”时，才可以继续
